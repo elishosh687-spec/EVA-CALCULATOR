@@ -16,6 +16,11 @@ export interface UserInputs {
     medium: number;
     large: number;
   };
+  quantities?: {
+    small: number;
+    medium: number;
+    large: number;
+  };
   shippingCostUSD: number;
   targetMargin: number;
   exchangeRate: number;
