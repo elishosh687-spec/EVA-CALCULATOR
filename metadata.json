@@ -1,0 +1,5 @@
+{
+  "name": "Hat Box Logistics & Pricing Calculator",
+  "description": "A specialized logistics tool for calculating container volume, unit quantities, shipping costs, and profit margins for hat box orders with RTL support.",
+  "requestFramePermissions": []
+}
