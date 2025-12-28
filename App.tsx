@@ -810,10 +810,11 @@ const App: React.FC = () => {
                     const visibleDynamicCols = [
                       isColumnVisible('totalUnits'),
                       isColumnVisible('totalCBM'),
-                      isColumnVisible('totalFactoryPrice'),
                       isColumnVisible('totalExpenses'),
                       isColumnVisible('shippingPerUnit'),
                       isColumnVisible('relativeShippingTotal'),
+                      isColumnVisible('factoryPrice'),
+                      isColumnVisible('totalFactoryPrice'),
                       isColumnVisible('price'),
                       isColumnVisible('priceSurcharge'),
                       isColumnVisible('totalProfit'),
@@ -822,12 +823,13 @@ const App: React.FC = () => {
                     const totalDynamicCols = visibleDynamicCols.filter(Boolean).length;
                     const unitsCol = visibleDynamicCols[0] ? 1 : 0;
                     const cbmCol = visibleDynamicCols[1] ? 1 : 0;
-                    const factoryPriceCol = visibleDynamicCols[2] ? 1 : 0;
-                    const expensesCol = visibleDynamicCols[3] ? 1 : 0;
-                    const shippingCols = (visibleDynamicCols[4] ? 1 : 0) + (visibleDynamicCols[5] ? 1 : 0);
-                    const priceCols = visibleDynamicCols[6] ? 1 : 0;
-                    const priceSurchargeCol = visibleDynamicCols[7] ? 1 : 0;
-                    const profitCols = (visibleDynamicCols[8] ? 1 : 0) + (visibleDynamicCols[9] ? 1 : 0);
+                    const expensesCol = visibleDynamicCols[2] ? 1 : 0;
+                    const shippingCols = (visibleDynamicCols[3] ? 1 : 0) + (visibleDynamicCols[4] ? 1 : 0);
+                    const factoryPriceCol = visibleDynamicCols[5] ? 1 : 0;
+                    const totalFactoryPriceCol = visibleDynamicCols[6] ? 1 : 0;
+                    const priceCols = visibleDynamicCols[7] ? 1 : 0;
+                    const priceSurchargeCol = visibleDynamicCols[8] ? 1 : 0;
+                    const profitCols = (visibleDynamicCols[9] ? 1 : 0) + (visibleDynamicCols[10] ? 1 : 0);
                     return (
                       <>
                         <td colSpan={fixedCols} className="px-4 py-4 text-left border-l border-gray-200">סה"כ כללי:</td>
