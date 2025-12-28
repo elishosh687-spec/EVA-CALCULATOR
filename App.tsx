@@ -656,15 +656,15 @@ const App: React.FC = () => {
                       isColumnVisible('internalDimensions'),
                       isColumnVisible('masterCBM'),
                       isColumnVisible('unitsPerCarton'),
-                      isColumnVisible('factoryPrice'),
                     ].filter(Boolean).length;
                     const dynamicCols = [
                       isColumnVisible('totalUnits'),
                       isColumnVisible('totalCBM'),
-                      isColumnVisible('totalFactoryPrice'),
                       isColumnVisible('totalExpenses'),
                       isColumnVisible('shippingPerUnit'),
                       isColumnVisible('relativeShippingTotal'),
+                      isColumnVisible('factoryPrice'),
+                      isColumnVisible('totalFactoryPrice'),
                       isColumnVisible('price'),
                       isColumnVisible('priceSurcharge'),
                       isColumnVisible('totalProfit'),
@@ -687,7 +687,6 @@ const App: React.FC = () => {
                       { key: 'internalDimensions', label: 'פנימי (cm)', border: false },
                       { key: 'masterCBM', label: 'CBM מאסטר', border: false },
                       { key: 'unitsPerCarton', label: "יח' בקרטון", border: false },
-                      { key: 'factoryPrice', label: 'מחיר מפעל ($)', border: true },
                     ];
                     return fixedColumns.map(col => {
                       if (!isColumnVisible(col.key)) return null;
@@ -720,11 +719,13 @@ const App: React.FC = () => {
                     const dynamicColumns = [
                       { key: 'totalUnits', label: 'כמות יחידות' },
                       { key: 'totalCBM', label: 'CBM כולל' },
-                      { key: 'totalFactoryPrice', label: 'מחיר מפעל כולל' },
                       { key: 'totalExpenses', label: '5% תוספת' },
                       { key: 'shippingPerUnit', label: "משלוח ליח'" },
                       { key: 'relativeShippingTotal', label: 'משלוח יחסי' },
+                      { key: 'factoryPrice', label: 'מחיר מפעל ($)' },
+                      { key: 'totalFactoryPrice', label: 'מחיר מפעל כולל' },
                       { key: 'price', label: 'מחיר לקוח כולל' },
+                      { key: 'priceSurcharge', label: '5% תוספת' },
                       { key: 'totalProfit', label: 'רווח סה"כ' },
                       { key: 'marginPercent', label: '% רווחיות' },
                     ];
@@ -763,21 +764,9 @@ const App: React.FC = () => {
                     {isColumnVisible('internalDimensions') && <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500">{res.size.internalDimensions}</td>}
                     {isColumnVisible('masterCBM') && <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500">{res.size.masterCBM}</td>}
                     {isColumnVisible('unitsPerCarton') && <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500">{res.size.unitsPerCarton}</td>}
-                    {isColumnVisible('factoryPrice') && (
-                      <td className="px-4 py-4 whitespace-nowrap text-sm border-l border-gray-100">
-                        <div className="text-gray-900 font-bold">${res.size.factoryPriceUSD.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
-                        <div className="text-gray-600 text-xs">₪{(res.size.factoryPriceUSD * inputs.exchangeRate).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
-                      </td>
-                    )}
                     
                     {isColumnVisible('totalUnits') && <td className="px-4 py-4 whitespace-nowrap text-sm text-indigo-700 font-bold">{res.totalUnits.toLocaleString()}</td>}
                     {isColumnVisible('totalCBM') && <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-700 font-semibold">{res.totalCBM.toFixed(3)}</td>}
-                    {isColumnVisible('totalFactoryPrice') && (
-                      <td className="px-4 py-4 whitespace-nowrap text-sm border-l border-gray-100">
-                        <div className="text-gray-900 font-bold">${res.totalFactoryPriceUSD.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
-                        <div className="text-gray-600 text-xs">₪{(res.totalFactoryPriceUSD * inputs.exchangeRate).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
-                      </td>
-                    )}
                     {isColumnVisible('totalExpenses') && (
                       <td className="px-4 py-4 whitespace-nowrap text-sm border-l border-gray-100">
                         <div className="text-orange-900 font-bold">${res.totalExpensesUSD.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
@@ -817,7 +806,6 @@ const App: React.FC = () => {
                       isColumnVisible('internalDimensions'),
                       isColumnVisible('masterCBM'),
                       isColumnVisible('unitsPerCarton'),
-                      isColumnVisible('factoryPrice'),
                     ].filter(Boolean).length;
                     const visibleDynamicCols = [
                       isColumnVisible('totalUnits'),
@@ -845,12 +833,6 @@ const App: React.FC = () => {
                         <td colSpan={fixedCols} className="px-4 py-4 text-left border-l border-gray-200">סה"כ כללי:</td>
                         {isColumnVisible('totalUnits') && <td className="px-4 py-4 text-indigo-700">{summary.totalUnits.toLocaleString()}</td>}
                         {isColumnVisible('totalCBM') && <td className="px-4 py-4 text-gray-700 font-semibold">{summary.totalCBM.toFixed(3)}</td>}
-                        {isColumnVisible('totalFactoryPrice') && (
-                          <td className="px-4 py-4 border-l border-gray-100">
-                            <div className="text-gray-900 font-bold">${summary.totalFactoryPriceUSD.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
-                            <div className="text-gray-600 text-xs">₪{(summary.totalFactoryPriceUSD * inputs.exchangeRate).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
-                          </td>
-                        )}
                         {isColumnVisible('totalExpenses') && (
                           <td className="px-4 py-4 border-l border-gray-100">
                             <div className="text-orange-900 font-bold">${summary.totalExpensesUSD.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
@@ -858,6 +840,18 @@ const App: React.FC = () => {
                           </td>
                         )}
                         {shippingCols > 0 && <td colSpan={shippingCols} className="px-4 py-4 text-sm text-gray-500 italic">נפח מנוצל: {summary.totalCBMUtilized.toFixed(2)} CBM</td>}
+                        {factoryPriceCol > 0 && (
+                          <td className="px-4 py-4 border-l border-gray-100">
+                            <div className="text-gray-900 font-bold">-</div>
+                            <div className="text-gray-600 text-xs">-</div>
+                          </td>
+                        )}
+                        {totalFactoryPriceCol > 0 && (
+                          <td className="px-4 py-4 border-l border-gray-100">
+                            <div className="text-gray-900 font-bold">${summary.totalFactoryPriceUSD.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                            <div className="text-gray-600 text-xs">₪{(summary.totalFactoryPriceUSD * inputs.exchangeRate).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                          </td>
+                        )}
                         {priceCols > 0 && (
                           <td colSpan={priceCols} className="px-4 py-4">
                             <div className="text-blue-900">סך הכל: ${summary.totalInvestmentUSD.toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
