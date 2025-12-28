@@ -1,5 +1,5 @@
 
-import React, { useState, useMemo, useRef } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { BOX_SIZES, CONTAINER_CAPACITIES } from './constants';
 import { UserInputs, CalculationResult, SummaryData } from './types';
 import jsPDF from 'jspdf';
@@ -20,26 +20,68 @@ const App: React.FC = () => {
     shippingCostUSD: 7500,
     targetMargin: 40,
     exchangeRate: 3.2,
+    unknownExpensesType: 'percent',
+    unknownExpensesValue: 5, // Default 5%
   });
 
   // Column visibility configuration
-  const columnConfig = {
+  const defaultColumnConfig = {
     // Fixed columns (always visible)
-    size: { visible: true, internal: false },
-    dimensions: { visible: true, internal: false },
-    internalDimensions: { visible: true, internal: false },
-    masterCBM: { visible: true, internal: false },
-    unitsPerCarton: { visible: true, internal: false },
-    factoryPrice: { visible: true, internal: true }, // Only seller
+    size: { visible: true, internal: false, label: 'מידה' },
+    dimensions: { visible: true, internal: false, label: 'מידות (cm)' },
+    internalDimensions: { visible: true, internal: false, label: 'פנימי (cm)' },
+    masterCBM: { visible: true, internal: false, label: 'CBM מאסטר' },
+    unitsPerCarton: { visible: true, internal: false, label: "יח' בקרטון" },
+    factoryPrice: { visible: true, internal: true, label: 'מחיר מפעל ($)' }, // Only seller
     // Dynamic columns
-    totalUnits: { visible: true, internal: false },
-    shippingPerUnit: { visible: true, internal: true }, // Only seller
-    relativeShippingTotal: { visible: true, internal: true }, // Only seller
-    priceUSD: { visible: true, internal: false },
-    priceILS: { visible: true, internal: false },
-    totalProfit: { visible: true, internal: true }, // Only seller
-    marginPercent: { visible: true, internal: true }, // Only seller
+    totalUnits: { visible: true, internal: false, label: 'כמות יחידות' },
+    totalCBM: { visible: true, internal: false, label: 'CBM כולל' }, // Total CBM by quantity
+    totalFactoryPrice: { visible: true, internal: true, label: 'מחיר מפעל כולל' }, // Only seller
+    totalExpenses: { visible: true, internal: true, label: '5% תוספת' }, // Only seller - factory price + unknown expenses
+    shippingPerUnit: { visible: true, internal: true, label: "משלוח ליח'" }, // Only seller
+    relativeShippingTotal: { visible: true, internal: true, label: 'משלוח יחסי' }, // Only seller
+    price: { visible: true, internal: false, label: 'מחיר לקוח כולל' }, // Combined USD and ILS price
+    totalProfit: { visible: true, internal: true, label: 'רווח סה"כ' }, // Only seller
+    marginPercent: { visible: true, internal: true, label: '% רווחיות' }, // Only seller
   };
+
+  // User-controlled column visibility state
+  const [columnVisibility, setColumnVisibility] = useState<Record<string, boolean>>(() => {
+    const initial: Record<string, boolean> = {};
+    Object.keys(defaultColumnConfig).forEach(key => {
+      initial[key] = defaultColumnConfig[key as keyof typeof defaultColumnConfig].visible;
+    });
+    return initial;
+  });
+
+  const columnConfig = useMemo(() => {
+    const config: Record<string, { visible: boolean; internal: boolean; label: string }> = {};
+    Object.keys(defaultColumnConfig).forEach(key => {
+      const defaultConfig = defaultColumnConfig[key as keyof typeof defaultColumnConfig];
+      config[key] = {
+        ...defaultConfig,
+        visible: columnVisibility[key] ?? defaultConfig.visible
+      };
+    });
+    return config;
+  }, [columnVisibility]);
+
+  // Update column visibility when view mode changes
+  useEffect(() => {
+    if (viewMode === 'customer') {
+      // In customer mode, automatically hide all internal columns
+      setColumnVisibility(prev => {
+        const updated = { ...prev };
+        Object.keys(defaultColumnConfig).forEach(key => {
+          const config = defaultColumnConfig[key as keyof typeof defaultColumnConfig];
+          if (config.internal) {
+            updated[key] = false;
+          }
+        });
+        return updated;
+      });
+    }
+  }, [viewMode]);
 
   const handleMixChange = (key: keyof UserInputs['mixPercents'], value: string) => {
     const numValue = parseFloat(value) || 0;
@@ -115,8 +157,8 @@ const App: React.FC = () => {
     const sumAllUnits = preliminaryCalculations.reduce((acc, curr) => acc + curr.totalUnits, 0);
     const shippingPerUnit = sumAllUnits > 0 ? inputs.shippingCostUSD / sumAllUnits : 0;
 
-    // Step 2: Final calculations
-    return preliminaryCalculations.map(pre => {
+    // Step 2: Calculate all prices first to get total customer transaction
+    const resultsWithPrices = preliminaryCalculations.map(pre => {
       const { size, totalUnits, actualCBM } = pre;
       
       const landingCostUSD = size.factoryPriceUSD + shippingPerUnit;
@@ -126,47 +168,112 @@ const App: React.FC = () => {
       const priceUSD = marginFactor > 0 ? landingCostUSD / marginFactor : 0;
       const priceILS = priceUSD * inputs.exchangeRate;
       
+      const totalFactoryPriceUSD = size.factoryPriceUSD * totalUnits;
+      const customerTotalTransaction = priceILS * totalUnits;
+      
+      return {
+        ...pre,
+        priceUSD,
+        priceILS,
+        landingCostILS,
+        totalFactoryPriceUSD,
+        customerTotalTransaction
+      };
+    });
+
+    // Calculate total customer transaction and unknown expenses
+    const totalCustomerTransaction = resultsWithPrices.reduce((sum, r) => sum + r.customerTotalTransaction, 0);
+    const totalUnknownExpensesILS = inputs.unknownExpensesType === 'percent'
+      ? totalCustomerTransaction * (inputs.unknownExpensesValue / 100)
+      : inputs.unknownExpensesValue;
+    const totalUnknownExpensesUSD = totalUnknownExpensesILS / inputs.exchangeRate;
+    
+    // Calculate total factory price for distribution
+    const totalFactoryPriceAll = resultsWithPrices.reduce((sum, r) => sum + r.totalFactoryPriceUSD, 0);
+
+    // Step 3: Final calculations with total expenses
+    return resultsWithPrices.map(pre => {
+      const { size, totalUnits, actualCBM, priceUSD, priceILS, landingCostILS, totalFactoryPriceUSD } = pre;
+      
       const totalProfitILS = (priceILS - landingCostILS) * totalUnits;
+      const totalProfitUSD = totalProfitILS / inputs.exchangeRate;
       const relativeShippingTotal = totalUnits * shippingPerUnit;
+      const totalCBM = actualCBM;
+      
+      // Calculate proportional unknown expenses for this row
+      const proportionalUnknownExpensesUSD = totalFactoryPriceAll > 0 
+        ? (totalFactoryPriceUSD / totalFactoryPriceAll) * totalUnknownExpensesUSD
+        : 0;
+      
+      // Total expenses = factory price + proportional unknown expenses
+      const totalExpensesUSD = totalFactoryPriceUSD + proportionalUnknownExpensesUSD;
 
       return {
         size,
         allocatedCBM: actualCBM,
-        cartons: pre.cartons,
+        cartons: preliminaryCalculations.find(p => p.size.id === size.id)?.cartons || 0,
         totalUnits,
+        totalCBM,
+        totalFactoryPriceUSD,
+        totalExpensesUSD,
         shippingPerUnit,
         relativeShippingTotal,
         priceUSD,
         priceILS,
         landingCostILS,
-        totalProfitILS
+        totalProfitILS,
+        totalProfitUSD
       } as CalculationResult;
     });
   }, [inputs]);
 
   const summary = useMemo((): SummaryData => {
-    // Fixed: Added explicit generic type to results.reduce to ensure 'acc' and 'curr' have correct types.
-    return results.reduce<SummaryData>((acc, curr) => ({
+    // Calculate base summary without unknown expenses
+    const baseSummary = results.reduce<Omit<SummaryData, 'totalUnknownExpensesILS'>>((acc, curr) => ({
       totalUnits: acc.totalUnits + curr.totalUnits,
       totalCBMUtilized: acc.totalCBMUtilized + curr.allocatedCBM,
+      totalCBM: acc.totalCBM + curr.totalCBM,
+      totalFactoryPriceUSD: acc.totalFactoryPriceUSD + curr.totalFactoryPriceUSD,
+      totalExpensesUSD: acc.totalExpensesUSD + curr.totalExpensesUSD,
       totalInvestmentUSD: acc.totalInvestmentUSD + (curr.totalUnits * curr.size.factoryPriceUSD),
       totalProfitILS: acc.totalProfitILS + curr.totalProfitILS
     }), {
       totalUnits: 0,
       totalCBMUtilized: 0,
+      totalCBM: 0,
+      totalFactoryPriceUSD: 0,
+      totalExpensesUSD: 0,
       totalInvestmentUSD: inputs.shippingCostUSD, // Start with shipping cost
       totalProfitILS: 0
     });
-  }, [results, inputs.shippingCostUSD]);
+
+    // Calculate total customer transaction amount (priceILS * totalUnits for all rows)
+    const totalCustomerTransaction = results.reduce((sum, curr) => sum + (curr.priceILS * curr.totalUnits), 0);
+    
+    // Calculate unknown expenses as total (not per row)
+    const totalUnknownExpensesILS = inputs.unknownExpensesType === 'percent'
+      ? totalCustomerTransaction * (inputs.unknownExpensesValue / 100)
+      : inputs.unknownExpensesValue;
+
+    // Add unknown expenses to investment and subtract from profit
+    return {
+      ...baseSummary,
+      totalInvestmentUSD: baseSummary.totalInvestmentUSD + (totalUnknownExpensesILS / inputs.exchangeRate), // Convert ILS to USD
+      totalProfitILS: baseSummary.totalProfitILS - totalUnknownExpensesILS,
+      totalUnknownExpensesILS
+    };
+  }, [results, inputs.shippingCostUSD, inputs.unknownExpensesType, inputs.unknownExpensesValue, inputs.exchangeRate]);
 
   const totalPercents = Object.values(inputs.mixPercents).reduce((a, b) => a + b, 0);
 
   // Check if column should be visible
   const isColumnVisible = (columnKey: keyof typeof columnConfig) => {
     const config = columnConfig[columnKey];
+    // First check user's visibility preference
     if (!config.visible) return false;
-    if (viewMode === 'seller') return true;
-    return !config.internal; // Hide internal columns in customer view
+    // Then check view mode (customer view hides internal columns)
+    if (viewMode === 'customer' && config.internal) return false;
+    return true;
   };
 
   // Export to PDF
@@ -217,8 +324,11 @@ const App: React.FC = () => {
           <div>סך יחידות: ${summary.totalUnits.toLocaleString()}</div>
           <div>נפח מנוצל: ${summary.totalCBMUtilized.toFixed(2)} / ${CONTAINER_CAPACITIES[inputs.containerType]} CBM</div>
           ${viewMode === 'seller' ? `
-            <div>סך השקעה: $${summary.totalInvestmentUSD.toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
-            <div>רווח צפוי: ₪${summary.totalProfitILS.toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
+            <div>סך השקעה: $${summary.totalInvestmentUSD.toLocaleString(undefined, { maximumFractionDigits: 0 })} <span style="font-size: 0.85em; color: #666;">₪${(summary.totalInvestmentUSD * inputs.exchangeRate).toLocaleString(undefined, { maximumFractionDigits: 0 })}</span></div>
+            <div>רווח צפוי: $${(summary.totalProfitILS / inputs.exchangeRate).toLocaleString(undefined, { maximumFractionDigits: 0 })} <span style="font-size: 0.85em; color: #666;">₪${summary.totalProfitILS.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span></div>
+            ${summary.totalUnknownExpensesILS > 0 ? `
+              <div>הוצאות לא ידועות ${inputs.unknownExpensesType === 'percent' ? `(${inputs.unknownExpensesValue}%)` : '(סכום קבוע)'}: $${(summary.totalUnknownExpensesILS / inputs.exchangeRate).toLocaleString(undefined, { maximumFractionDigits: 0 })} <span style="font-size: 0.85em; color: #666;">₪${summary.totalUnknownExpensesILS.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span></div>
+            ` : ''}
           ` : ''}
         </div>
       `;
@@ -382,6 +492,55 @@ const App: React.FC = () => {
                   />
                 </div>
               </div>
+              
+              {/* Unknown Expenses */}
+              <div className="border-t border-gray-200 pt-3 md:pt-4 mt-3 md:mt-4">
+                <label className="block text-sm font-medium text-gray-700 mb-2">הוצאות לא ידועות</label>
+                <div className="mb-2">
+                  <div className="flex gap-3 bg-gray-50 p-1 rounded-md">
+                    <button
+                      type="button"
+                      onClick={() => setInputs(prev => ({ ...prev, unknownExpensesType: 'percent' }))}
+                      className={`flex-1 px-3 py-1.5 text-xs font-medium rounded transition-colors ${
+                        inputs.unknownExpensesType === 'percent'
+                          ? 'bg-blue-600 text-white'
+                          : 'bg-transparent text-gray-700 hover:bg-gray-200'
+                      }`}
+                    >
+                      אחוזים
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setInputs(prev => ({ ...prev, unknownExpensesType: 'fixed' }))}
+                      className={`flex-1 px-3 py-1.5 text-xs font-medium rounded transition-colors ${
+                        inputs.unknownExpensesType === 'fixed'
+                          ? 'bg-blue-600 text-white'
+                          : 'bg-transparent text-gray-700 hover:bg-gray-200'
+                      }`}
+                    >
+                      סכום קבוע
+                    </button>
+                  </div>
+                </div>
+                <div className="relative">
+                  <input 
+                    type="number"
+                    step={inputs.unknownExpensesType === 'percent' ? '0.01' : '1'}
+                    value={inputs.unknownExpensesValue}
+                    onChange={(e) => setInputs(prev => ({ ...prev, unknownExpensesValue: parseFloat(e.target.value) || 0 }))}
+                    className="w-full border-gray-300 border rounded-md p-2.5 md:p-2 text-base md:text-sm"
+                    placeholder={inputs.unknownExpensesType === 'percent' ? '5' : '0'}
+                  />
+                  <span className="absolute left-2 top-2 text-gray-400 text-sm">
+                    {inputs.unknownExpensesType === 'percent' ? '%' : '₪'}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-gray-500">
+                  {inputs.unknownExpensesType === 'percent' 
+                    ? 'מסכום כולל של העסקה (מחיר לקוח + שילוח)'
+                    : 'סכום קבוע בשקלים'}
+                </p>
+              </div>
             </div>
 
           </div>
@@ -420,15 +579,62 @@ const App: React.FC = () => {
                 </span>
               )}
             </div>
-            <button
-              onClick={exportToPDF}
-              className="w-full sm:w-auto px-6 py-2.5 bg-gradient-to-r from-green-600 to-green-700 text-white rounded-lg hover:from-green-700 hover:to-green-800 transition-all duration-200 font-medium flex items-center justify-center gap-2 shadow-md hover:shadow-lg transform hover:scale-105"
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-              </svg>
-              ייצוא ל-PDF
-            </button>
+            
+            <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-center">
+              <button
+                onClick={exportToPDF}
+                className="w-full sm:w-auto px-6 py-2.5 bg-gradient-to-r from-green-600 to-green-700 text-white rounded-lg hover:from-green-700 hover:to-green-800 transition-all duration-200 font-medium flex items-center justify-center gap-2 shadow-md hover:shadow-lg transform hover:scale-105"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                ייצוא ל-PDF
+              </button>
+              
+              {/* Hidden Columns Panel */}
+              {(() => {
+                const hiddenColumns = Object.entries(columnConfig)
+                  .filter(([key, config]) => {
+                    if (viewMode === 'customer' && config.internal) return false;
+                    const isVisible = columnVisibility[key] ?? config.visible;
+                    return !isVisible;
+                  })
+                  .map(([key, config]) => ({ key, label: config.label }));
+                
+                if (hiddenColumns.length === 0) return null;
+                
+                return (
+                  <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 shadow-sm">
+                    <div className="flex items-center gap-2 mb-2">
+                      <svg className="w-4 h-4 text-yellow-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                      </svg>
+                      <span className="text-xs font-semibold text-yellow-800">עמודות מוסתרות ({hiddenColumns.length})</span>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {hiddenColumns.map(({ key, label }) => (
+                        <button
+                          key={key}
+                          onClick={() => {
+                            setColumnVisibility(prev => ({
+                              ...prev,
+                              [key]: true
+                            }));
+                          }}
+                          className="text-xs px-2 py-1 bg-yellow-100 hover:bg-yellow-200 text-yellow-800 rounded-md transition-colors flex items-center gap-1"
+                          title={`הצג ${label}`}
+                        >
+                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                          </svg>
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
           </div>
         </div>
 
@@ -450,10 +656,12 @@ const App: React.FC = () => {
                     ].filter(Boolean).length;
                     const dynamicCols = [
                       isColumnVisible('totalUnits'),
+                      isColumnVisible('totalCBM'),
+                      isColumnVisible('totalFactoryPrice'),
+                      isColumnVisible('totalExpenses'),
                       isColumnVisible('shippingPerUnit'),
                       isColumnVisible('relativeShippingTotal'),
-                      isColumnVisible('priceUSD'),
-                      isColumnVisible('priceILS'),
+                      isColumnVisible('price'),
                       isColumnVisible('totalProfit'),
                       isColumnVisible('marginPercent'),
                     ].filter(Boolean).length;
@@ -467,21 +675,79 @@ const App: React.FC = () => {
                 </tr>
                 <tr className="bg-slate-700 text-xs">
                   {/* Fixed Columns */}
-                  {isColumnVisible('size') && <th className="px-4 py-3 font-semibold">מידה</th>}
-                  {isColumnVisible('dimensions') && <th className="px-4 py-3 font-semibold">מידות (cm)</th>}
-                  {isColumnVisible('internalDimensions') && <th className="px-4 py-3 font-semibold">פנימי (cm)</th>}
-                  {isColumnVisible('masterCBM') && <th className="px-4 py-3 font-semibold">CBM מאסטר</th>}
-                  {isColumnVisible('unitsPerCarton') && <th className="px-4 py-3 font-semibold">יח' בקרטון</th>}
-                  {isColumnVisible('factoryPrice') && <th className="px-4 py-3 font-semibold border-l border-slate-600">מחיר מפעל ($)</th>}
+                  {(() => {
+                    const fixedColumns = [
+                      { key: 'size', label: 'מידה', border: false },
+                      { key: 'dimensions', label: 'מידות (cm)', border: false },
+                      { key: 'internalDimensions', label: 'פנימי (cm)', border: false },
+                      { key: 'masterCBM', label: 'CBM מאסטר', border: false },
+                      { key: 'unitsPerCarton', label: "יח' בקרטון", border: false },
+                      { key: 'factoryPrice', label: 'מחיר מפעל ($)', border: true },
+                    ];
+                    return fixedColumns.map(col => {
+                      if (!isColumnVisible(col.key)) return null;
+                      const isVisible = columnVisibility[col.key] ?? columnConfig[col.key].visible;
+                      return (
+                        <th key={col.key} className={`px-4 py-3 font-semibold ${col.border ? 'border-l border-slate-600' : ''}`}>
+                          <div className="flex items-center justify-end gap-2">
+                            <span>{col.label}</span>
+                            <input
+                              type="checkbox"
+                              checked={isVisible}
+                              onChange={(e) => {
+                                e.stopPropagation();
+                                setColumnVisibility(prev => ({
+                                  ...prev,
+                                  [col.key]: e.target.checked
+                                }));
+                              }}
+                              className="w-3 h-3 cursor-pointer"
+                              style={{ accentColor: '#60a5fa' }}
+                            />
+                          </div>
+                        </th>
+                      );
+                    });
+                  })()}
                   
                   {/* Dynamic Columns */}
-                  {isColumnVisible('totalUnits') && <th className="px-4 py-3 font-semibold">כמות יחידות</th>}
-                  {isColumnVisible('shippingPerUnit') && <th className="px-4 py-3 font-semibold">משלוח ליח'</th>}
-                  {isColumnVisible('relativeShippingTotal') && <th className="px-4 py-3 font-semibold">משלוח יחסי</th>}
-                  {isColumnVisible('priceUSD') && <th className="px-4 py-3 font-semibold">מחיר ($)</th>}
-                  {isColumnVisible('priceILS') && <th className="px-4 py-3 font-semibold">מחיר (₪)</th>}
-                  {isColumnVisible('totalProfit') && <th className="px-4 py-3 font-semibold">רווח סה"כ (₪)</th>}
-                  {isColumnVisible('marginPercent') && <th className="px-4 py-3 font-semibold">% רווחיות</th>}
+                  {(() => {
+                    const dynamicColumns = [
+                      { key: 'totalUnits', label: 'כמות יחידות' },
+                      { key: 'totalCBM', label: 'CBM כולל' },
+                      { key: 'totalFactoryPrice', label: 'מחיר מפעל כולל' },
+                      { key: 'totalExpenses', label: '5% תוספת' },
+                      { key: 'shippingPerUnit', label: "משלוח ליח'" },
+                      { key: 'relativeShippingTotal', label: 'משלוח יחסי' },
+                      { key: 'price', label: 'מחיר לקוח כולל' },
+                      { key: 'totalProfit', label: 'רווח סה"כ' },
+                      { key: 'marginPercent', label: '% רווחיות' },
+                    ];
+                    return dynamicColumns.map(col => {
+                      if (!isColumnVisible(col.key)) return null;
+                      const isVisible = columnVisibility[col.key] ?? columnConfig[col.key].visible;
+                      return (
+                        <th key={col.key} className="px-4 py-3 font-semibold">
+                          <div className="flex items-center justify-end gap-2">
+                            <span>{col.label}</span>
+                            <input
+                              type="checkbox"
+                              checked={isVisible}
+                              onChange={(e) => {
+                                e.stopPropagation();
+                                setColumnVisibility(prev => ({
+                                  ...prev,
+                                  [col.key]: e.target.checked
+                                }));
+                              }}
+                              className="w-3 h-3 cursor-pointer"
+                              style={{ accentColor: '#60a5fa' }}
+                            />
+                          </div>
+                        </th>
+                      );
+                    });
+                  })()}
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
@@ -492,14 +758,41 @@ const App: React.FC = () => {
                     {isColumnVisible('internalDimensions') && <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500">{res.size.internalDimensions}</td>}
                     {isColumnVisible('masterCBM') && <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500">{res.size.masterCBM}</td>}
                     {isColumnVisible('unitsPerCarton') && <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500">{res.size.unitsPerCarton}</td>}
-                    {isColumnVisible('factoryPrice') && <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-900 font-bold border-l border-gray-100">${res.size.factoryPriceUSD.toFixed(2)}</td>}
+                    {isColumnVisible('factoryPrice') && (
+                      <td className="px-4 py-4 whitespace-nowrap text-sm border-l border-gray-100">
+                        <div className="text-gray-900 font-bold">${res.size.factoryPriceUSD.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                        <div className="text-gray-600 text-xs">₪{(res.size.factoryPriceUSD * inputs.exchangeRate).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                      </td>
+                    )}
                     
                     {isColumnVisible('totalUnits') && <td className="px-4 py-4 whitespace-nowrap text-sm text-indigo-700 font-bold">{res.totalUnits.toLocaleString()}</td>}
-                    {isColumnVisible('shippingPerUnit') && <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-600">${res.shippingPerUnit.toFixed(2)}</td>}
-                    {isColumnVisible('relativeShippingTotal') && <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-600">${res.relativeShippingTotal.toFixed(0)}</td>}
-                    {isColumnVisible('priceUSD') && <td className="px-4 py-4 whitespace-nowrap text-sm text-blue-800 font-semibold">${res.priceUSD.toFixed(2)}</td>}
-                    {isColumnVisible('priceILS') && <td className="px-4 py-4 whitespace-nowrap text-sm text-green-700 font-bold">₪{res.priceILS.toFixed(2)}</td>}
-                    {isColumnVisible('totalProfit') && <td className="px-4 py-4 whitespace-nowrap text-sm text-emerald-600 font-bold">₪{res.totalProfitILS.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>}
+                    {isColumnVisible('totalCBM') && <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-700 font-semibold">{res.totalCBM.toFixed(3)}</td>}
+                    {isColumnVisible('totalFactoryPrice') && (
+                      <td className="px-4 py-4 whitespace-nowrap text-sm border-l border-gray-100">
+                        <div className="text-gray-900 font-bold">${res.totalFactoryPriceUSD.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                        <div className="text-gray-600 text-xs">₪{(res.totalFactoryPriceUSD * inputs.exchangeRate).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                      </td>
+                    )}
+                    {isColumnVisible('totalExpenses') && (
+                      <td className="px-4 py-4 whitespace-nowrap text-sm border-l border-gray-100">
+                        <div className="text-orange-900 font-bold">${res.totalExpensesUSD.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                        <div className="text-orange-700 text-xs">₪{(res.totalExpensesUSD * inputs.exchangeRate).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                      </td>
+                    )}
+                    {isColumnVisible('shippingPerUnit') && <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-600">${res.shippingPerUnit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>}
+                    {isColumnVisible('relativeShippingTotal') && <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-600">${res.relativeShippingTotal.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>}
+                    {isColumnVisible('price') && (
+                      <td className="px-4 py-4 whitespace-nowrap text-sm">
+                        <div className="text-blue-800 font-semibold">${res.priceUSD.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                        <div className="text-green-700 font-bold text-xs">₪{res.priceILS.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                      </td>
+                    )}
+                    {isColumnVisible('totalProfit') && (
+                      <td className="px-4 py-4 whitespace-nowrap text-sm">
+                        <div className="text-emerald-800 font-semibold">${res.totalProfitUSD.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                        <div className="text-emerald-600 font-bold text-xs">₪{res.totalProfitILS.toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
+                      </td>
+                    )}
                     {isColumnVisible('marginPercent') && <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500">{inputs.targetMargin}%</td>}
                   </tr>
                 ))}
@@ -517,25 +810,53 @@ const App: React.FC = () => {
                     ].filter(Boolean).length;
                     const visibleDynamicCols = [
                       isColumnVisible('totalUnits'),
+                      isColumnVisible('totalCBM'),
+                      isColumnVisible('totalFactoryPrice'),
+                      isColumnVisible('totalExpenses'),
                       isColumnVisible('shippingPerUnit'),
                       isColumnVisible('relativeShippingTotal'),
-                      isColumnVisible('priceUSD'),
-                      isColumnVisible('priceILS'),
+                      isColumnVisible('price'),
                       isColumnVisible('totalProfit'),
                       isColumnVisible('marginPercent'),
                     ];
                     const totalDynamicCols = visibleDynamicCols.filter(Boolean).length;
                     const unitsCol = visibleDynamicCols[0] ? 1 : 0;
-                    const shippingCols = (visibleDynamicCols[1] ? 1 : 0) + (visibleDynamicCols[2] ? 1 : 0);
-                    const priceCols = (visibleDynamicCols[3] ? 1 : 0) + (visibleDynamicCols[4] ? 1 : 0);
-                    const profitCols = (visibleDynamicCols[5] ? 1 : 0) + (visibleDynamicCols[6] ? 1 : 0);
+                    const cbmCol = visibleDynamicCols[1] ? 1 : 0;
+                    const factoryPriceCol = visibleDynamicCols[2] ? 1 : 0;
+                    const expensesCol = visibleDynamicCols[3] ? 1 : 0;
+                    const shippingCols = (visibleDynamicCols[4] ? 1 : 0) + (visibleDynamicCols[5] ? 1 : 0);
+                    const priceCols = visibleDynamicCols[6] ? 1 : 0;
+                    const profitCols = (visibleDynamicCols[7] ? 1 : 0) + (visibleDynamicCols[8] ? 1 : 0);
                     return (
                       <>
                         <td colSpan={fixedCols} className="px-4 py-4 text-left border-l border-gray-200">סה"כ כללי:</td>
                         {isColumnVisible('totalUnits') && <td className="px-4 py-4 text-indigo-700">{summary.totalUnits.toLocaleString()}</td>}
+                        {isColumnVisible('totalCBM') && <td className="px-4 py-4 text-gray-700 font-semibold">{summary.totalCBM.toFixed(3)}</td>}
+                        {isColumnVisible('totalFactoryPrice') && (
+                          <td className="px-4 py-4 border-l border-gray-100">
+                            <div className="text-gray-900 font-bold">${summary.totalFactoryPriceUSD.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                            <div className="text-gray-600 text-xs">₪{(summary.totalFactoryPriceUSD * inputs.exchangeRate).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                          </td>
+                        )}
+                        {isColumnVisible('totalExpenses') && (
+                          <td className="px-4 py-4 border-l border-gray-100">
+                            <div className="text-orange-900 font-bold">${summary.totalExpensesUSD.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                            <div className="text-orange-700 text-xs">₪{(summary.totalExpensesUSD * inputs.exchangeRate).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                          </td>
+                        )}
                         {shippingCols > 0 && <td colSpan={shippingCols} className="px-4 py-4 text-sm text-gray-500 italic">נפח מנוצל: {summary.totalCBMUtilized.toFixed(2)} CBM</td>}
-                        {priceCols > 0 && <td colSpan={priceCols} className="px-4 py-4 text-blue-900">השקעה: ${summary.totalInvestmentUSD.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>}
-                        {profitCols > 0 && isColumnVisible('totalProfit') && <td colSpan={profitCols} className="px-4 py-4 text-emerald-700 text-lg">רווח צפוי: ₪{summary.totalProfitILS.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>}
+                        {priceCols > 0 && (
+                          <td colSpan={priceCols} className="px-4 py-4">
+                            <div className="text-blue-900">סך הכל: ${summary.totalInvestmentUSD.toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
+                            <div className="text-blue-700 text-xs">₪{(summary.totalInvestmentUSD * inputs.exchangeRate).toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
+                          </td>
+                        )}
+                        {profitCols > 0 && isColumnVisible('totalProfit') && (
+                          <td colSpan={profitCols} className="px-4 py-4">
+                            <div className="text-emerald-800 text-lg font-semibold">רווח צפוי: ${(summary.totalProfitILS / inputs.exchangeRate).toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
+                            <div className="text-emerald-700 text-sm">₪{summary.totalProfitILS.toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
+                          </td>
+                        )}
                       </>
                     );
                   })()}
@@ -547,7 +868,7 @@ const App: React.FC = () => {
         </div>
 
         {/* Summary Cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6 mb-6 md:mb-8">
+        <div className={`grid grid-cols-1 sm:grid-cols-2 ${viewMode === 'seller' && summary.totalUnknownExpensesILS > 0 ? 'lg:grid-cols-5' : 'lg:grid-cols-4'} gap-4 md:gap-6 mb-6 md:mb-8`}>
           <div className="bg-gradient-to-br from-indigo-50 to-indigo-100 border-r-4 border-indigo-500 p-4 md:p-6 rounded-xl shadow-md hover:shadow-lg transition-shadow">
             <div className="flex items-center justify-between mb-2">
               <h3 className="text-xs md:text-sm font-semibold text-indigo-700">סך יחידות במכולה</h3>
@@ -581,19 +902,43 @@ const App: React.FC = () => {
                 </svg>
               </div>
             </div>
-            <p className="text-2xl md:text-3xl font-bold text-blue-900">${summary.totalInvestmentUSD.toLocaleString(undefined, { maximumFractionDigits: 0 })}</p>
+            <div>
+              <p className="text-2xl md:text-3xl font-bold text-blue-900">${summary.totalInvestmentUSD.toLocaleString(undefined, { maximumFractionDigits: 0 })}</p>
+              <p className="text-sm md:text-base font-semibold text-blue-700">₪{(summary.totalInvestmentUSD * inputs.exchangeRate).toLocaleString(undefined, { maximumFractionDigits: 0 })}</p>
+            </div>
           </div>
           <div className="bg-gradient-to-br from-emerald-50 to-emerald-100 border-r-4 border-emerald-500 p-4 md:p-6 rounded-xl shadow-md hover:shadow-lg transition-shadow">
             <div className="flex items-center justify-between mb-2">
-              <h3 className="text-xs md:text-sm font-semibold text-emerald-700">סך רווח צפוי (שקלים)</h3>
+              <h3 className="text-xs md:text-sm font-semibold text-emerald-700">סך רווח צפוי</h3>
               <div className="w-8 h-8 md:w-10 md:h-10 bg-emerald-500 rounded-lg flex items-center justify-center flex-shrink-0">
                 <svg className="w-4 h-4 md:w-6 md:h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
                 </svg>
               </div>
             </div>
-            <p className="text-2xl md:text-3xl font-bold text-emerald-900">₪{summary.totalProfitILS.toLocaleString(undefined, { maximumFractionDigits: 0 })}</p>
+            <div>
+              <p className="text-2xl md:text-3xl font-bold text-emerald-900">${(summary.totalProfitILS / inputs.exchangeRate).toLocaleString(undefined, { maximumFractionDigits: 0 })}</p>
+              <p className="text-sm md:text-base font-semibold text-emerald-700">₪{summary.totalProfitILS.toLocaleString(undefined, { maximumFractionDigits: 0 })}</p>
+            </div>
           </div>
+          {viewMode === 'seller' && summary.totalUnknownExpensesILS > 0 && (
+            <div className="bg-gradient-to-br from-orange-50 to-orange-100 border-r-4 border-orange-500 p-4 md:p-6 rounded-xl shadow-md hover:shadow-lg transition-shadow">
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-xs md:text-sm font-semibold text-orange-700">
+                  הוצאות לא ידועות {inputs.unknownExpensesType === 'percent' ? `(${inputs.unknownExpensesValue}%)` : '(סכום קבוע)'}
+                </h3>
+                <div className="w-8 h-8 md:w-10 md:h-10 bg-orange-500 rounded-lg flex items-center justify-center flex-shrink-0">
+                  <svg className="w-4 h-4 md:w-6 md:h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                </div>
+              </div>
+              <div>
+                <p className="text-2xl md:text-3xl font-bold text-orange-900">${(summary.totalUnknownExpensesILS / inputs.exchangeRate).toLocaleString(undefined, { maximumFractionDigits: 0 })}</p>
+                <p className="text-sm md:text-base font-semibold text-orange-700">₪{summary.totalUnknownExpensesILS.toLocaleString(undefined, { maximumFractionDigits: 0 })}</p>
+              </div>
+            </div>
+          )}
         </div>
         
         <footer className="mt-12 text-center text-gray-500 text-sm">
