@@ -1,5 +1,5 @@
 
-import React, { useState, useMemo, useRef, useEffect } from 'react';
+import React, { useState, useMemo, useRef } from 'react';
 import { BOX_SIZES, CONTAINER_CAPACITIES } from './constants';
 import { UserInputs, CalculationResult, SummaryData } from './types';
 import jsPDF from 'jspdf';
@@ -19,6 +19,7 @@ const App: React.FC = () => {
     },
     targetMargin: 40,
     exchangeRate: 3.2,
+    shippingCostUSD: 0,
     unknownExpensesType: 'percent',
     unknownExpensesValue: 5, // Default 5%
   });
@@ -41,6 +42,8 @@ const App: React.FC = () => {
     totalCustomerPrice: { visible: true, internal: false, label: 'מחיר לקוח לכמות' }, // Total customer price for quantity
     totalProfit: { visible: true, internal: true, label: 'רווח סה"כ' }, // Only seller
     marginPercent: { visible: true, internal: true, label: '% רווחיות' }, // Only seller
+    shippingPerUnit: { visible: true, internal: false, label: 'שילוח ליחידה' }, // Shipping cost per unit
+    priceWithShipping: { visible: true, internal: false, label: 'מחיר לקוח כולל שילוח' }, // Customer price per unit including shipping
   };
 
   // User-controlled column visibility state
@@ -63,23 +66,6 @@ const App: React.FC = () => {
     });
     return config;
   }, [columnVisibility]);
-
-  // Update column visibility when view mode changes
-  useEffect(() => {
-    if (viewMode === 'customer') {
-      // In customer mode, automatically hide all internal columns
-      setColumnVisibility(prev => {
-        const updated = { ...prev };
-        Object.keys(defaultColumnConfig).forEach(key => {
-          const config = defaultColumnConfig[key as keyof typeof defaultColumnConfig];
-          if (config.internal) {
-            updated[key] = false;
-          }
-        });
-        return updated;
-      });
-    }
-  }, [viewMode]);
 
   const handleMixChange = (key: keyof UserInputs['mixPercents'], value: string) => {
     const numValue = parseFloat(value) || 0;
@@ -190,6 +176,9 @@ const App: React.FC = () => {
     
     // Calculate total factory price for distribution
     const totalFactoryPriceAll = resultsWithPrices.reduce((sum, r) => sum + r.totalFactoryPriceUSD, 0);
+    
+    // Calculate total units for shipping distribution (equal division)
+    const totalUnitsAll = resultsWithPrices.reduce((sum, r) => sum + r.totalUnits, 0);
 
     // Step 3: Final calculations with total expenses
     return resultsWithPrices.map(pre => {
@@ -209,6 +198,16 @@ const App: React.FC = () => {
       // Total expenses = factory price + proportional unknown expenses
       const totalExpensesUSD = totalFactoryPriceUSD + proportionalUnknownExpensesUSD;
       
+      // Calculate shipping cost per unit (equal division: total shipping / total units)
+      const shippingPerUnitUSD = totalUnitsAll > 0
+        ? inputs.shippingCostUSD / totalUnitsAll
+        : 0;
+      const shippingPerUnitILS = shippingPerUnitUSD * inputs.exchangeRate;
+      
+      // Calculate customer price with shipping
+      const priceWithShippingUSD = priceUSD + shippingPerUnitUSD;
+      const priceWithShippingILS = priceILS + shippingPerUnitILS;
+      
       // Get cartons from preliminaryCalculations
       const cartons = preliminaryCalculations.find(p => p.size.id === size.id)?.cartons || 0;
 
@@ -224,7 +223,11 @@ const App: React.FC = () => {
         priceILS,
         landingCostILS,
         totalProfitILS,
-        totalProfitUSD
+        totalProfitUSD,
+        shippingPerUnitUSD,
+        shippingPerUnitILS,
+        priceWithShippingUSD,
+        priceWithShippingILS
       } as CalculationResult;
     });
   }, [inputs]);
@@ -486,6 +489,25 @@ const App: React.FC = () => {
                 </div>
               </div>
               
+              {/* Shipping Cost */}
+              <div className="border-t border-gray-200 pt-3 md:pt-4 mt-3 md:mt-4">
+                <label className="block text-sm font-medium text-gray-700 mb-1">מחיר המשלוח (USD)</label>
+                <div className="relative">
+                  <input 
+                    type="number"
+                    step="0.01"
+                    value={inputs.shippingCostUSD}
+                    onChange={(e) => setInputs(prev => ({ ...prev, shippingCostUSD: parseFloat(e.target.value) || 0 }))}
+                    className="w-full border-gray-300 border rounded-md p-2.5 md:p-2 text-base md:text-sm"
+                    placeholder="0"
+                  />
+                  <span className="absolute left-2 top-2 text-gray-400 text-sm">$</span>
+                </div>
+                <p className="mt-1 text-xs text-gray-500">
+                  מחיר השילוח יחולק יחסית לפי ה-CBM של כל מידה
+                </p>
+              </div>
+              
               {/* Unknown Expenses */}
               <div className="border-t border-gray-200 pt-3 md:pt-4 mt-3 md:mt-4">
                 <label className="block text-sm font-medium text-gray-700 mb-2">הוצאות לא ידועות</label>
@@ -685,6 +707,8 @@ const App: React.FC = () => {
                       { key: 'totalCustomerPrice', label: 'מחיר לקוח לכמות' },
                       { key: 'totalProfit', label: 'רווח סה"כ' },
                       { key: 'marginPercent', label: '% רווחיות' },
+                      { key: 'shippingPerUnit', label: 'שילוח ליחידה' },
+                      { key: 'priceWithShipping', label: 'מחיר לקוח כולל שילוח' },
                     ];
                     return dynamicColumns.map(col => {
                       if (!isColumnVisible(col.key)) return null;
@@ -761,6 +785,18 @@ const App: React.FC = () => {
                       </td>
                     )}
                     {isColumnVisible('marginPercent') && <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500">{inputs.targetMargin}%</td>}
+                    {isColumnVisible('shippingPerUnit') && (
+                      <td className="px-4 py-4 whitespace-nowrap text-sm border-l border-gray-100">
+                        <div className="text-purple-800 font-semibold">${res.shippingPerUnitUSD.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                        <div className="text-purple-600 text-xs">₪{res.shippingPerUnitILS.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                      </td>
+                    )}
+                    {isColumnVisible('priceWithShipping') && (
+                      <td className="px-4 py-4 whitespace-nowrap text-sm border-l border-gray-100">
+                        <div className="text-indigo-800 font-semibold">${res.priceWithShippingUSD.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                        <div className="text-indigo-600 font-bold text-xs">₪{res.priceWithShippingILS.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>
@@ -784,6 +820,8 @@ const App: React.FC = () => {
                       isColumnVisible('totalCustomerPrice'),
                       isColumnVisible('totalProfit'),
                       isColumnVisible('marginPercent'),
+                      isColumnVisible('shippingPerUnit'),
+                      isColumnVisible('priceWithShipping'),
                     ];
                     const totalDynamicCols = visibleDynamicCols.filter(Boolean).length;
                     const cbmCol = visibleDynamicCols[0] ? 1 : 0;
@@ -794,6 +832,8 @@ const App: React.FC = () => {
                     const priceCol = visibleDynamicCols[5] ? 1 : 0;
                     const totalCustomerPriceCol = visibleDynamicCols[6] ? 1 : 0;
                     const profitCols = (visibleDynamicCols[7] ? 1 : 0) + (visibleDynamicCols[8] ? 1 : 0);
+                    const shippingCol = visibleDynamicCols[9] ? 1 : 0;
+                    const priceWithShippingCol = visibleDynamicCols[10] ? 1 : 0;
                     return (
                       <>
                         <td colSpan={fixedCols} className="px-4 py-4 text-left border-l border-gray-200">סה"כ כללי:</td>
@@ -845,6 +885,26 @@ const App: React.FC = () => {
                             <div className="text-emerald-700 text-sm">₪{summary.totalProfitILS.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
                           </td>
                         )}
+                        {shippingCol > 0 && (() => {
+                          const totalShippingILS = results.reduce((sum, curr) => sum + (curr.shippingPerUnitILS * curr.totalUnits), 0);
+                          const totalShippingUSD = totalShippingILS / inputs.exchangeRate;
+                          return (
+                            <td className="px-4 py-4 border-l border-gray-100">
+                              <div className="text-purple-800 font-semibold">-</div>
+                              <div className="text-purple-600 text-xs">-</div>
+                            </td>
+                          );
+                        })()}
+                        {priceWithShippingCol > 0 && (() => {
+                          const totalPriceWithShippingILS = results.reduce((sum, curr) => sum + (curr.priceWithShippingILS * curr.totalUnits), 0);
+                          const totalPriceWithShippingUSD = totalPriceWithShippingILS / inputs.exchangeRate;
+                          return (
+                            <td className="px-4 py-4 border-l border-gray-100">
+                              <div className="text-indigo-800 font-semibold">${totalPriceWithShippingUSD.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                              <div className="text-indigo-600 text-xs">₪{totalPriceWithShippingILS.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                            </td>
+                          );
+                        })()}
                       </>
                     );
                   })()}

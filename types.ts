@@ -23,6 +23,7 @@ export interface UserInputs {
   };
   targetMargin: number;
   exchangeRate: number;
+  shippingCostUSD: number; // Total shipping cost in USD
   unknownExpensesType: 'percent' | 'fixed';
   unknownExpensesValue: number; // Percentage if type is 'percent', fixed amount in ILS if type is 'fixed'
 }
@@ -40,6 +41,10 @@ export interface CalculationResult {
   landingCostILS: number;
   totalProfitILS: number;
   totalProfitUSD: number; // Total profit in USD
+  shippingPerUnitUSD: number; // Shipping cost per unit (total shipping / total units) in USD
+  shippingPerUnitILS: number; // Shipping cost per unit (total shipping / total units) in ILS
+  priceWithShippingUSD: number; // Customer price per unit including shipping in USD
+  priceWithShippingILS: number; // Customer price per unit including shipping in ILS
 }
 
 export interface SummaryData {
