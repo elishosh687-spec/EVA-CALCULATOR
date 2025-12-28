@@ -193,7 +193,7 @@ const App: React.FC = () => {
 
     // Step 3: Final calculations with total expenses
     return resultsWithPrices.map(pre => {
-      const { size, totalUnits, actualCBM, priceUSD, priceILS, landingCostILS, totalFactoryPriceUSD } = pre;
+      const { size, totalUnits, actualCBM, cartons, priceUSD, priceILS, landingCostILS, totalFactoryPriceUSD } = pre;
       
       const totalProfitILS = (priceILS - landingCostILS) * totalUnits;
       const totalProfitUSD = totalProfitILS / inputs.exchangeRate;
@@ -211,7 +211,7 @@ const App: React.FC = () => {
       return {
         size,
         allocatedCBM: actualCBM,
-        cartons: preliminaryCalculations.find(p => p.size.id === size.id)?.cartons || 0,
+        cartons: cartons || 0,
         totalUnits,
         totalCBM,
         totalFactoryPriceUSD,
