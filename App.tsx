@@ -792,6 +792,12 @@ const App: React.FC = () => {
                         <div className="text-green-700 font-bold text-xs">₪{res.priceILS.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
                       </td>
                     )}
+                    {isColumnVisible('priceSurcharge') && (
+                      <td className="px-4 py-4 whitespace-nowrap text-sm border-l border-gray-100">
+                        <div className="text-orange-900 font-bold">${((res.priceILS * 0.05) / inputs.exchangeRate).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                        <div className="text-orange-700 text-xs">₪{(res.priceILS * 0.05).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                      </td>
+                    )}
                     {isColumnVisible('totalProfit') && (
                       <td className="px-4 py-4 whitespace-nowrap text-sm">
                         <div className="text-emerald-800 font-semibold">${res.totalProfitUSD.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
