@@ -302,7 +302,7 @@ const App: React.FC = () => {
       header.innerHTML = `
         <h1 style="font-size: 24px; font-weight: bold; margin-bottom: 10px;">הצעת מחיר - קופסאות כובעים</h1>
         <div style="font-size: 14px; color: #666;">
-          <span>סוג מכולה: ${inputs.containerType === '20' ? '20 (24 CBM)' : '40 (64 CBM)'}</span>
+          <span>סוג מכולה: ${inputs.containerType === '20' ? `20 (${CONTAINER_CAPACITIES['20']} CBM)` : `40 (${CONTAINER_CAPACITIES['40']} CBM)`}</span>
           <span style="margin: 0 20px;">|</span>
           <span>תאריך: ${new Date().toLocaleDateString('he-IL')}</span>
           ${viewMode === 'customer' ? '<div style="margin-top: 10px; color: #888;">(מצג לקוח)</div>' : ''}
@@ -399,8 +399,8 @@ const App: React.FC = () => {
                 onChange={(e) => setInputs(prev => ({ ...prev, containerType: e.target.value as '20' | '40' }))}
                 className="w-full border-gray-300 border rounded-md p-2.5 md:p-2 focus:ring-blue-500 focus:border-blue-500 text-base md:text-sm"
               >
-                <option value="20">מכולה 20 (24 CBM)</option>
-                <option value="40">מכולה 40 (64 CBM)</option>
+                <option value="20">מכולה 20 ({CONTAINER_CAPACITIES['20']} CBM)</option>
+                <option value="40">מכולה 40 ({CONTAINER_CAPACITIES['40']} CBM)</option>
               </select>
             </div>
 
