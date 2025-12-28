@@ -21,7 +21,6 @@ export interface UserInputs {
     medium: number;
     large: number;
   };
-  shippingCostUSD: number;
   targetMargin: number;
   exchangeRate: number;
   unknownExpensesType: 'percent' | 'fixed';
@@ -36,8 +35,6 @@ export interface CalculationResult {
   totalCBM: number; // Total CBM for this size (allocatedCBM)
   totalFactoryPriceUSD: number; // Total factory price for all units (factoryPriceUSD * totalUnits)
   totalExpensesUSD: number; // Total expenses (factory price + proportional unknown expenses) in USD
-  shippingPerUnit: number;
-  relativeShippingTotal: number;
   priceUSD: number;
   priceILS: number;
   landingCostILS: number;
