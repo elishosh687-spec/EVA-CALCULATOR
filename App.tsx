@@ -34,10 +34,11 @@ const App: React.FC = () => {
     // Dynamic columns
     totalUnits: { visible: true, internal: false, label: 'כמות יחידות' },
     totalCBM: { visible: true, internal: false, label: 'CBM כולל' }, // Total CBM by quantity
-    factoryPrice: { visible: true, internal: true, label: 'מחיר מפעל ($)' }, // Only seller - base factory price
+    factoryPrice: { visible: true, internal: true, label: 'מחיר יחידה - מפעל' }, // Only seller - base factory price
     totalExpenses: { visible: true, internal: true, label: '5% תוספת' }, // Only seller - 5% surcharge on factory price
-    totalFactoryPrice: { visible: true, internal: true, label: 'מחיר מפעל כולל' }, // Only seller - factory price + 5% surcharge
-    price: { visible: true, internal: false, label: 'מחיר לקוח כולל' }, // Combined USD and ILS price
+    totalFactoryPrice: { visible: true, internal: true, label: 'מחיר מפעל לכמות' }, // Only seller - factory price + 5% surcharge
+    price: { visible: true, internal: false, label: 'מחיר יחידה - לקוח' }, // Unit price for customer
+    totalCustomerPrice: { visible: true, internal: false, label: 'מחיר לקוח לכמות' }, // Total customer price for quantity
     totalProfit: { visible: true, internal: true, label: 'רווח סה"כ' }, // Only seller
     marginPercent: { visible: true, internal: true, label: '% רווחיות' }, // Only seller
   };
@@ -251,16 +252,16 @@ const App: React.FC = () => {
     // Calculate total customer transaction amount (priceILS * totalUnits for all rows)
     const totalCustomerTransaction = results.reduce((sum, curr) => sum + (curr.priceILS * curr.totalUnits), 0);
     
-    // Calculate unknown expenses as total (not per row)
+    // Calculate unknown expenses as total (not per row) - for display only, not used in profit calculation
     const totalUnknownExpensesILS = inputs.unknownExpensesType === 'percent'
       ? totalCustomerTransaction * (inputs.unknownExpensesValue / 100)
       : inputs.unknownExpensesValue;
 
-    // Add unknown expenses to investment and subtract from profit
+    // Return summary without subtracting unknown expenses (5% surcharge on factory price already included)
     return {
       ...baseSummary,
-      totalInvestmentUSD: baseSummary.totalInvestmentUSD + (totalUnknownExpensesILS / inputs.exchangeRate), // Convert ILS to USD
-      totalProfitILS: baseSummary.totalProfitILS - totalUnknownExpensesILS,
+      totalInvestmentUSD: baseSummary.totalInvestmentUSD, // No need to add unknown expenses - 5% surcharge already included
+      totalProfitILS: baseSummary.totalProfitILS, // No need to subtract unknown expenses - 5% surcharge already included
       totalUnknownExpensesILS
     };
   }, [results, inputs.unknownExpensesType, inputs.unknownExpensesValue, inputs.exchangeRate]);
@@ -636,33 +637,6 @@ const App: React.FC = () => {
             <div className="inline-block min-w-full align-middle px-4 sm:px-0">
               <table className="min-w-full divide-y divide-gray-200 text-right">
               <thead className="bg-slate-800 text-white">
-                <tr>
-                  {(() => {
-                    const fixedCols = [
-                      isColumnVisible('size'),
-                      isColumnVisible('dimensions'),
-                      isColumnVisible('internalDimensions'),
-                      isColumnVisible('masterCBM'),
-                      isColumnVisible('unitsPerCarton'),
-                    ].filter(Boolean).length;
-                    const dynamicCols = [
-                      isColumnVisible('totalCBM'),
-                      isColumnVisible('totalUnits'),
-                      isColumnVisible('factoryPrice'),
-                      isColumnVisible('totalExpenses'),
-                      isColumnVisible('totalFactoryPrice'),
-                      isColumnVisible('price'),
-                      isColumnVisible('totalProfit'),
-                      isColumnVisible('marginPercent'),
-                    ].filter(Boolean).length;
-                    return (
-                      <>
-                        {fixedCols > 0 && <th colSpan={fixedCols} className="px-6 py-3 text-center border-l border-slate-700 font-bold uppercase tracking-wider bg-slate-900">נתונים קבועים</th>}
-                        {dynamicCols > 0 && <th colSpan={dynamicCols} className="px-6 py-3 text-center font-bold uppercase tracking-wider bg-indigo-900">נתונים משתנים</th>}
-                      </>
-                    );
-                  })()}
-                </tr>
                 <tr className="bg-slate-700 text-xs">
                   {/* Fixed Columns */}
                   {(() => {
@@ -704,10 +678,11 @@ const App: React.FC = () => {
                     const dynamicColumns = [
                       { key: 'totalCBM', label: 'CBM כולל' },
                       { key: 'totalUnits', label: 'כמות יחידות' },
-                      { key: 'factoryPrice', label: 'מחיר מפעל ($)' },
+                      { key: 'factoryPrice', label: 'מחיר יחידה - מפעל' },
                       { key: 'totalExpenses', label: '5% תוספת' },
-                      { key: 'totalFactoryPrice', label: 'מחיר מפעל כולל' },
-                      { key: 'price', label: 'מחיר לקוח כולל' },
+                      { key: 'totalFactoryPrice', label: 'מחיר מפעל לכמות' },
+                      { key: 'price', label: 'מחיר יחידה - לקוח' },
+                      { key: 'totalCustomerPrice', label: 'מחיר לקוח לכמות' },
                       { key: 'totalProfit', label: 'רווח סה"כ' },
                       { key: 'marginPercent', label: '% רווחיות' },
                     ];
@@ -773,6 +748,12 @@ const App: React.FC = () => {
                         <div className="text-green-700 font-bold text-xs">₪{res.priceILS.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
                       </td>
                     )}
+                    {isColumnVisible('totalCustomerPrice') && (
+                      <td className="px-4 py-4 whitespace-nowrap text-sm border-l border-gray-100">
+                        <div className="text-blue-900 font-bold">${(res.priceUSD * res.totalUnits).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                        <div className="text-blue-700 text-xs">₪{(res.priceILS * res.totalUnits).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                      </td>
+                    )}
                     {isColumnVisible('totalProfit') && (
                       <td className="px-4 py-4 whitespace-nowrap text-sm">
                         <div className="text-emerald-800 font-semibold">${res.totalProfitUSD.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
@@ -800,6 +781,7 @@ const App: React.FC = () => {
                       isColumnVisible('totalExpenses'),
                       isColumnVisible('totalFactoryPrice'),
                       isColumnVisible('price'),
+                      isColumnVisible('totalCustomerPrice'),
                       isColumnVisible('totalProfit'),
                       isColumnVisible('marginPercent'),
                     ];
@@ -809,8 +791,9 @@ const App: React.FC = () => {
                     const factoryPriceCol = visibleDynamicCols[2] ? 1 : 0;
                     const expensesCol = visibleDynamicCols[3] ? 1 : 0;
                     const totalFactoryPriceCol = visibleDynamicCols[4] ? 1 : 0;
-                    const priceCols = visibleDynamicCols[5] ? 1 : 0;
-                    const profitCols = (visibleDynamicCols[6] ? 1 : 0) + (visibleDynamicCols[7] ? 1 : 0);
+                    const priceCol = visibleDynamicCols[5] ? 1 : 0;
+                    const totalCustomerPriceCol = visibleDynamicCols[6] ? 1 : 0;
+                    const profitCols = (visibleDynamicCols[7] ? 1 : 0) + (visibleDynamicCols[8] ? 1 : 0);
                     return (
                       <>
                         <td colSpan={fixedCols} className="px-4 py-4 text-left border-l border-gray-200">סה"כ כללי:</td>
@@ -840,12 +823,18 @@ const App: React.FC = () => {
                             <div className="text-gray-600 text-xs">₪{(summary.totalFactoryPriceUSD * inputs.exchangeRate).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
                           </td>
                         )}
-                        {priceCols > 0 && (() => {
+                        {priceCol > 0 && (
+                          <td className="px-4 py-4">
+                            <div className="text-blue-800 font-semibold">-</div>
+                            <div className="text-green-700 font-bold text-xs">-</div>
+                          </td>
+                        )}
+                        {totalCustomerPriceCol > 0 && (() => {
                           const totalCustomerPriceILS = results.reduce((sum, curr) => sum + (curr.priceILS * curr.totalUnits), 0);
                           const totalCustomerPriceUSD = totalCustomerPriceILS / inputs.exchangeRate;
                           return (
-                            <td colSpan={priceCols} className="px-4 py-4">
-                              <div className="text-blue-900">סך הכל: ${totalCustomerPriceUSD.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                            <td className="px-4 py-4 border-l border-gray-100">
+                              <div className="text-blue-900 font-bold">${totalCustomerPriceUSD.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
                               <div className="text-blue-700 text-xs">₪{totalCustomerPriceILS.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
                             </td>
                           );
