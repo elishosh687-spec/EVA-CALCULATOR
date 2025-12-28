@@ -32,6 +32,6 @@ export const BOX_SIZES: BoxSizeData[] = [
 ];
 
 export const CONTAINER_CAPACITIES = {
-  '20': 28.2,
-  '40': 67.2
+  '20': 27.2,
+  '40': 67.1
 };
