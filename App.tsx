@@ -41,6 +41,7 @@ const App: React.FC = () => {
     shippingPerUnit: { visible: true, internal: true, label: "משלוח ליח'" }, // Only seller
     relativeShippingTotal: { visible: true, internal: true, label: 'משלוח יחסי' }, // Only seller
     price: { visible: true, internal: false, label: 'מחיר לקוח כולל' }, // Combined USD and ILS price
+    priceSurcharge: { visible: true, internal: true, label: '5% תוספת' }, // 5% surcharge on customer price - only seller
     totalProfit: { visible: true, internal: true, label: 'רווח סה"כ' }, // Only seller
     marginPercent: { visible: true, internal: true, label: '% רווחיות' }, // Only seller
   };
@@ -665,6 +666,7 @@ const App: React.FC = () => {
                       isColumnVisible('shippingPerUnit'),
                       isColumnVisible('relativeShippingTotal'),
                       isColumnVisible('price'),
+                      isColumnVisible('priceSurcharge'),
                       isColumnVisible('totalProfit'),
                       isColumnVisible('marginPercent'),
                     ].filter(Boolean).length;
@@ -819,6 +821,7 @@ const App: React.FC = () => {
                       isColumnVisible('shippingPerUnit'),
                       isColumnVisible('relativeShippingTotal'),
                       isColumnVisible('price'),
+                      isColumnVisible('priceSurcharge'),
                       isColumnVisible('totalProfit'),
                       isColumnVisible('marginPercent'),
                     ];
@@ -829,7 +832,8 @@ const App: React.FC = () => {
                     const expensesCol = visibleDynamicCols[3] ? 1 : 0;
                     const shippingCols = (visibleDynamicCols[4] ? 1 : 0) + (visibleDynamicCols[5] ? 1 : 0);
                     const priceCols = visibleDynamicCols[6] ? 1 : 0;
-                    const profitCols = (visibleDynamicCols[7] ? 1 : 0) + (visibleDynamicCols[8] ? 1 : 0);
+                    const priceSurchargeCol = visibleDynamicCols[7] ? 1 : 0;
+                    const profitCols = (visibleDynamicCols[8] ? 1 : 0) + (visibleDynamicCols[9] ? 1 : 0);
                     return (
                       <>
                         <td colSpan={fixedCols} className="px-4 py-4 text-left border-l border-gray-200">סה"כ כללי:</td>
@@ -852,6 +856,12 @@ const App: React.FC = () => {
                           <td colSpan={priceCols} className="px-4 py-4">
                             <div className="text-blue-900">סך הכל: ${summary.totalInvestmentUSD.toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
                             <div className="text-blue-700 text-xs">₪{(summary.totalInvestmentUSD * inputs.exchangeRate).toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
+                          </td>
+                        )}
+                        {priceSurchargeCol > 0 && (
+                          <td className="px-4 py-4 border-l border-gray-100">
+                            <div className="text-orange-900 font-bold">${((summary.totalInvestmentUSD * inputs.exchangeRate * 0.05) / inputs.exchangeRate).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                            <div className="text-orange-700 text-xs">₪{(summary.totalInvestmentUSD * inputs.exchangeRate * 0.05).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
                           </td>
                         )}
                         {profitCols > 0 && isColumnVisible('totalProfit') && (
