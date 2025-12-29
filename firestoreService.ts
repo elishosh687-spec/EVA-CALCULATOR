@@ -23,17 +23,37 @@ export interface SavedOrder {
 const ORDERS_COLLECTION = 'orders';
 const PRODUCTS_COLLECTION = 'products';
 
+// Helper function to remove undefined values from objects (Firestore doesn't support undefined)
+const removeUndefined = (obj: any): any => {
+  if (obj === null || obj === undefined) {
+    return null;
+  }
+  if (Array.isArray(obj)) {
+    return obj.map(item => removeUndefined(item));
+  }
+  if (typeof obj === 'object') {
+    const cleaned: any = {};
+    for (const key in obj) {
+      if (obj[key] !== undefined) {
+        cleaned[key] = removeUndefined(obj[key]);
+      }
+    }
+    return cleaned;
+  }
+  return obj;
+};
+
 // Save a new order
 export const saveOrder = async (name: string, inputs: UserInputs): Promise<string> => {
   try {
     const orderData: Omit<SavedOrder, 'id'> = {
       name,
-      inputs,
+      inputs: removeUndefined(inputs) as UserInputs,
       createdAt: Timestamp.now(),
       updatedAt: Timestamp.now(),
     };
     
-    const docRef = await addDoc(collection(db, ORDERS_COLLECTION), orderData);
+    const docRef = await addDoc(collection(db, ORDERS_COLLECTION), removeUndefined(orderData));
     return docRef.id;
   } catch (error: any) {
     console.error('Error saving order:', error);
@@ -61,11 +81,11 @@ export const getAllOrders = async (): Promise<SavedOrder[]> => {
 export const updateOrder = async (orderId: string, name: string, inputs: UserInputs): Promise<void> => {
   try {
     const orderRef = doc(db, ORDERS_COLLECTION, orderId);
-    await updateDoc(orderRef, {
+    await updateDoc(orderRef, removeUndefined({
       name,
-      inputs,
+      inputs: removeUndefined(inputs) as UserInputs,
       updatedAt: Timestamp.now(),
-    });
+    }));
   } catch (error) {
     console.error('Error updating order:', error);
     throw error;
@@ -86,11 +106,11 @@ export const deleteOrder = async (orderId: string): Promise<void> => {
 export const saveProducts = async (products: Product[]): Promise<string> => {
   try {
     const productsData = {
-      products,
+      products: removeUndefined(products),
       updatedAt: Timestamp.now(),
     };
     
-    const docRef = await addDoc(collection(db, PRODUCTS_COLLECTION), productsData);
+    const docRef = await addDoc(collection(db, PRODUCTS_COLLECTION), removeUndefined(productsData));
     return docRef.id;
   } catch (error: any) {
     console.error('Error saving products:', error);
