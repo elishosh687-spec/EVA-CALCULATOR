@@ -1,4 +1,17 @@
 
+export interface Product {
+  id: string;
+  name: string;
+  dimensions: string; // Product dimensions description for customer (e.g., "33 x 30 x 11 cm")
+  description: string; // Product description/explanation text
+  masterCartonCBM: number; // Master carton CBM (direct input, not calculated)
+  unitsPerCarton: number;
+  factoryPriceUSD: number;
+  profitMargin: number; // Individual profit margin percentage
+  mixPercent?: number; // Percentage of container volume (calculated or user input)
+  quantity?: number; // Direct quantity input (optional)
+}
+
 export interface BoxSizeData {
   id: string;
   name: string;
@@ -11,17 +24,7 @@ export interface BoxSizeData {
 
 export interface UserInputs {
   containerType: '20' | '40';
-  mixPercents: {
-    small: number;
-    medium: number;
-    large: number;
-  };
-  quantities?: {
-    small: number;
-    medium: number;
-    large: number;
-  };
-  targetMargin: number;
+  products: Product[];
   exchangeRate: number;
   shippingCostUSD: number; // Total shipping cost in USD
   unknownExpensesType: 'percent' | 'fixed';

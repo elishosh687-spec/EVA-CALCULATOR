@@ -1,42 +1,101 @@
-
-import React, { useState, useMemo, useRef } from 'react';
-import { BOX_SIZES, CONTAINER_CAPACITIES } from './constants';
-import { UserInputs, CalculationResult, SummaryData } from './types';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
+import { CONTAINER_CAPACITIES } from './constants';
+import { UserInputs, CalculationResult, SummaryData, Product } from './types';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
+import { saveOrder, getAllOrders, deleteOrder, saveProducts, getSavedProducts, SavedOrder } from './firestoreService';
 
 type ViewMode = 'seller' | 'customer';
+type TabMode = 'calculator' | 'orders';
+
+// Generate unique ID for products
+const generateProductId = (): string => {
+  return `product-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+};
+
+// Default products (migrated from BOX_SIZES)
+const getDefaultProducts = (): Product[] => {
+  return [
+    {
+      id: generateProductId(),
+      name: 'Small',
+      dimensions: '33 x 30 x 11',
+      description: '',
+      masterCartonCBM: 0.059,
+      unitsPerCarton: 4,
+      factoryPriceUSD: 4.48,
+      profitMargin: 40,
+      mixPercent: 0,
+    },
+    {
+      id: generateProductId(),
+      name: 'Medium',
+      dimensions: '37 x 34 x 12',
+      description: '',
+      masterCartonCBM: 0.11,
+      unitsPerCarton: 6,
+      factoryPriceUSD: 5.51,
+      profitMargin: 40,
+      mixPercent: 0,
+    },
+    {
+      id: generateProductId(),
+      name: 'Large',
+      dimensions: '42 x 37 x 18',
+      description: '',
+      masterCartonCBM: 0.128,
+      unitsPerCarton: 6,
+      factoryPriceUSD: 5.79,
+      profitMargin: 40,
+      mixPercent: 0,
+    },
+  ];
+};
 
 const App: React.FC = () => {
+  const [activeTab, setActiveTab] = useState<TabMode>('calculator');
   const [viewMode, setViewMode] = useState<ViewMode>('seller');
   const tableRef = useRef<HTMLDivElement>(null);
+  const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
   const [inputs, setInputs] = useState<UserInputs>({
     containerType: '40',
-    mixPercents: {
-      small: 20,
-      medium: 40,
-      large: 40,
-    },
-    targetMargin: 40,
+    products: getDefaultProducts(),
     exchangeRate: 3.2,
     shippingCostUSD: 0,
     unknownExpensesType: 'percent',
     unknownExpensesValue: 5, // Default 5%
   });
+  
+  // Firestore state
+  const [savedOrders, setSavedOrders] = useState<SavedOrder[]>([]);
+  const [showSaveDialog, setShowSaveDialog] = useState(false);
+  const [orderName, setOrderName] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [productsChanged, setProductsChanged] = useState(false);
+
+  const toggleRowExpansion = (productId: string) => {
+    setExpandedRows(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(productId)) {
+        newSet.delete(productId);
+      } else {
+        newSet.add(productId);
+      }
+      return newSet;
+    });
+  };
 
   // Column visibility configuration
   const defaultColumnConfig = {
     // Fixed columns (always visible)
-    size: { visible: true, internal: false, label: 'מידה' },
-    dimensions: { visible: true, internal: false, label: 'מידות (cm)' },
-    internalDimensions: { visible: true, internal: false, label: 'פנימי (cm)' },
+    size: { visible: true, internal: false, label: 'שם' },
     masterCBM: { visible: true, internal: false, label: 'CBM מאסטר' },
     unitsPerCarton: { visible: true, internal: false, label: "יח' בקרטון" },
     // Dynamic columns
     totalUnits: { visible: true, internal: false, label: 'כמות יחידות' },
     totalCBM: { visible: true, internal: false, label: 'CBM כולל' }, // Total CBM by quantity
     factoryPrice: { visible: true, internal: true, label: 'מחיר יחידה - מפעל' }, // Only seller - base factory price
-    totalExpenses: { visible: true, internal: true, label: '5% תוספת' }, // Only seller - 5% surcharge on factory price
+    totalExpenses: { visible: true, internal: true, label: 'תוספת' }, // Only seller - surcharge on factory price (dynamic label)
     totalFactoryPrice: { visible: true, internal: true, label: 'מחיר מפעל לכמות' }, // Only seller - factory price + 5% surcharge
     price: { visible: true, internal: false, label: 'מחיר יחידה - לקוח' }, // Unit price for customer
     totalCustomerPrice: { visible: true, internal: false, label: 'מחיר לקוח לכמות' }, // Total customer price for quantity
@@ -67,47 +126,89 @@ const App: React.FC = () => {
     return config;
   }, [columnVisibility]);
 
-  const handleMixChange = (key: keyof UserInputs['mixPercents'], value: string) => {
-    const numValue = parseFloat(value) || 0;
+  // Helper function to check if column should be visible
+  const isColumnVisible = (key: string): boolean => {
+    if (viewMode === 'customer') {
+      const config = columnConfig[key];
+      return config && !config.internal && (columnVisibility[key] ?? config.visible);
+    }
+    return columnVisibility[key] ?? columnConfig[key]?.visible ?? true;
+  };
+
+  // Product management handlers
+  const handleAddProduct = () => {
     setInputs(prev => ({
       ...prev,
-      mixPercents: {
-        ...prev.mixPercents,
-        [key]: numValue,
-      },
-      quantities: undefined, // Clear quantities when using percentages
+      products: [
+        ...prev.products,
+        {
+          id: generateProductId(),
+          name: '',
+          dimensions: '',
+          description: '',
+          masterCartonCBM: 0,
+          unitsPerCarton: 1,
+          factoryPriceUSD: 0,
+          profitMargin: 40,
+          mixPercent: 0,
+        }
+      ]
     }));
   };
 
-  const handleQuantityChange = (key: keyof NonNullable<UserInputs['quantities']>, value: string) => {
+  const handleRemoveProduct = (productId: string) => {
+    setInputs(prev => ({
+      ...prev,
+      products: prev.products.filter(p => p.id !== productId)
+    }));
+  };
+
+
+  const handleProductChange = (productId: string, field: keyof Product, value: string | number) => {
+    setInputs(prev => ({
+      ...prev,
+      products: prev.products.map(p =>
+        p.id === productId ? { ...p, [field]: value } : p
+      )
+    }));
+  };
+
+  const handleMixPercentChange = (productId: string, value: string) => {
+    const numValue = parseFloat(value) || 0;
+    setInputs(prev => ({
+      ...prev,
+      products: prev.products.map(p =>
+        p.id === productId ? { ...p, mixPercent: numValue, quantity: undefined } : p
+      )
+    }));
+  };
+
+  const handleQuantityChange = (productId: string, value: string) => {
     const numValue = parseFloat(value) || 0;
     setInputs(prev => {
-      const newQuantities = {
-        ...prev.quantities || { small: 0, medium: 0, large: 0 },
-        [key]: numValue,
-      };
-      
+      const updatedProducts = prev.products.map(p =>
+        p.id === productId ? { ...p, quantity: numValue } : p
+      );
+
       // Calculate percentages from quantities based on CBM
       const totalCBM = CONTAINER_CAPACITIES[prev.containerType];
-      const totalCBMUsed = BOX_SIZES.reduce((sum, size) => {
-        const qty = newQuantities[size.id as keyof typeof newQuantities] || 0;
-        const cartons = Math.ceil(qty / size.unitsPerCarton);
-        return sum + (cartons * size.masterCBM);
+      const totalCBMUsed = updatedProducts.reduce((sum, product) => {
+        const qty = product.quantity || 0;
+        const cartons = Math.ceil(qty / product.unitsPerCarton);
+        return sum + (cartons * product.masterCartonCBM);
       }, 0);
-      
-      const newMixPercents = BOX_SIZES.reduce((acc, size) => {
-        const qty = newQuantities[size.id as keyof typeof newQuantities] || 0;
-        const cartons = Math.ceil(qty / size.unitsPerCarton);
-        const cbmUsed = cartons * size.masterCBM;
-        // Calculate percentage based on total container CBM
-        acc[size.id as keyof typeof acc] = totalCBM > 0 ? (cbmUsed / totalCBM) * 100 : 0;
-        return acc;
-      }, { small: 0, medium: 0, large: 0 } as UserInputs['mixPercents']);
-      
+
+      const productsWithPercents = updatedProducts.map(product => {
+        const qty = product.quantity || 0;
+        const cartons = Math.ceil(qty / product.unitsPerCarton);
+        const cbmUsed = cartons * product.masterCartonCBM;
+        const mixPercent = totalCBM > 0 ? (cbmUsed / totalCBM) * 100 : 0;
+        return { ...product, mixPercent };
+      });
+
       return {
         ...prev,
-        quantities: newQuantities,
-        mixPercents: newMixPercents,
+        products: productsWithPercents
       };
     });
   };
@@ -115,37 +216,39 @@ const App: React.FC = () => {
   const results = useMemo(() => {
     const totalCBM = CONTAINER_CAPACITIES[inputs.containerType];
     
-    // Step 1: Preliminary calculations for each size to get total units
-    const preliminaryCalculations = BOX_SIZES.map(size => {
+    // Step 1: Preliminary calculations for each product to get total units
+    const preliminaryCalculations = inputs.products.map(product => {
+      const masterCBM = product.masterCartonCBM;
       let totalUnits = 0;
       let allocatedCBM = 0;
       let cartons = 0;
       
       // If quantities are provided, use them directly
-      if (inputs.quantities && Object.values(inputs.quantities).some(q => q > 0)) {
-        totalUnits = inputs.quantities[size.id as keyof NonNullable<UserInputs['quantities']>] || 0;
-        cartons = Math.ceil(totalUnits / size.unitsPerCarton);
-        allocatedCBM = cartons * size.masterCBM;
+      if (product.quantity && product.quantity > 0) {
+        totalUnits = product.quantity;
+        cartons = Math.ceil(totalUnits / product.unitsPerCarton);
+        allocatedCBM = cartons * masterCBM;
       } else {
         // Otherwise, use percentages
-        const mixPercent = inputs.mixPercents[size.id as keyof UserInputs['mixPercents']];
+        const mixPercent = product.mixPercent || 0;
         allocatedCBM = totalCBM * (mixPercent / 100);
-        cartons = Math.floor(allocatedCBM / size.masterCBM);
-        totalUnits = cartons * size.unitsPerCarton;
-        allocatedCBM = cartons * size.masterCBM;
+        cartons = Math.floor(allocatedCBM / masterCBM);
+        totalUnits = cartons * product.unitsPerCarton;
+        allocatedCBM = cartons * masterCBM;
       }
       
-      return { size, allocatedCBM, cartons, totalUnits, actualCBM: allocatedCBM };
+      return { product, allocatedCBM, cartons, totalUnits, actualCBM: allocatedCBM, masterCBM };
     });
 
     // Step 2: Calculate all prices first to get total customer transaction
     const resultsWithPrices = preliminaryCalculations.map(pre => {
-      const { size, totalUnits, actualCBM } = pre;
+      const { product, totalUnits, actualCBM, masterCBM } = pre;
       
-      // Calculate customer price: (factoryPrice * 1.05) / (1 - margin%)
-      // Margin applies to factory price + 5% surcharge
-      const factoryPriceWithSurchargeUSD = size.factoryPriceUSD * 1.05;
-      const marginFactor = 1 - (inputs.targetMargin / 100);
+      // Calculate customer price: (factoryPrice * (1 + unknownExpenses%)) / (1 - margin%)
+      // Margin applies to factory price + surcharge, using individual profit margin
+      const surchargeMultiplier = 1 + (inputs.unknownExpensesValue / 100);
+      const factoryPriceWithSurchargeUSD = product.factoryPriceUSD * surchargeMultiplier;
+      const marginFactor = 1 - (product.profitMargin / 100);
       const priceUSD = marginFactor > 0 ? factoryPriceWithSurchargeUSD / marginFactor : 0;
       const priceILS = priceUSD * inputs.exchangeRate;
       
@@ -182,7 +285,7 @@ const App: React.FC = () => {
 
     // Step 3: Final calculations with total expenses
     return resultsWithPrices.map(pre => {
-      const { size, totalUnits, actualCBM, priceUSD, priceILS, landingCostILS, totalFactoryPriceUSD } = pre;
+      const { product, totalUnits, actualCBM, masterCBM, priceUSD, priceILS, landingCostILS, totalFactoryPriceUSD } = pre;
       
       // Profit = (customer price - (factory price + 5% surcharge)) × quantity
       const profitPerUnitILS = priceILS - landingCostILS;
@@ -209,10 +312,21 @@ const App: React.FC = () => {
       const priceWithShippingILS = priceILS + shippingPerUnitILS;
       
       // Get cartons from preliminaryCalculations
-      const cartons = preliminaryCalculations.find(p => p.size.id === size.id)?.cartons || 0;
+      const cartons = preliminaryCalculations.find(p => p.product.id === product.id)?.cartons || 0;
+
+      // Create BoxSizeData-like object for compatibility with existing table rendering
+      const sizeData = {
+        id: product.id,
+        name: product.name,
+        dimensions: product.dimensions, // Use dimensions description for customer
+        internalDimensions: '', // Not used in new system
+        masterCBM: masterCBM,
+        unitsPerCarton: product.unitsPerCarton,
+        factoryPriceUSD: product.factoryPriceUSD,
+      };
 
       return {
-        size,
+        size: sizeData,
         allocatedCBM: actualCBM,
         cartons,
         totalUnits,
@@ -227,8 +341,9 @@ const App: React.FC = () => {
         shippingPerUnitUSD,
         shippingPerUnitILS,
         priceWithShippingUSD,
-        priceWithShippingILS
-      } as CalculationResult;
+        priceWithShippingILS,
+        productProfitMargin: product.profitMargin, // Store individual margin for display
+      } as CalculationResult & { productProfitMargin: number };
     });
   }, [inputs]);
 
@@ -269,90 +384,136 @@ const App: React.FC = () => {
     };
   }, [results, inputs.unknownExpensesType, inputs.unknownExpensesValue, inputs.exchangeRate]);
 
-  const totalPercents = Object.values(inputs.mixPercents).reduce((a, b) => a + b, 0);
+  const totalPercents = inputs.products.reduce((sum, p) => sum + (p.mixPercent || 0), 0);
 
-  // Check if column should be visible
-  const isColumnVisible = (columnKey: keyof typeof columnConfig) => {
-    const config = columnConfig[columnKey];
-    // First check user's visibility preference
-    if (!config.visible) return false;
-    // Then check view mode (customer view hides internal columns)
-    if (viewMode === 'customer' && config.internal) return false;
-    return true;
+  // Load saved products on mount
+  useEffect(() => {
+    const loadProducts = async () => {
+      try {
+        setLoading(true);
+        const savedProducts = await getSavedProducts();
+        if (savedProducts && savedProducts.length > 0) {
+          setInputs(prev => ({
+            ...prev,
+            products: savedProducts
+          }));
+          setProductsChanged(false); // Reset after loading
+        }
+      } catch (error) {
+        console.error('Error loading products:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+    loadProducts();
+  }, []);
+
+  // Load saved orders
+  useEffect(() => {
+    const loadOrders = async () => {
+      try {
+        const orders = await getAllOrders();
+        setSavedOrders(orders);
+      } catch (error) {
+        console.error('Error loading orders:', error);
+      }
+    };
+    if (activeTab === 'orders') {
+      loadOrders();
+    }
+  }, [activeTab]);
+
+  // Track products changes (but not on initial load)
+  const isInitialLoad = useRef(true);
+  useEffect(() => {
+    if (isInitialLoad.current) {
+      isInitialLoad.current = false;
+      return;
+    }
+    setProductsChanged(true);
+  }, [inputs.products]);
+
+  // Handle save order
+  const handleSaveOrder = async () => {
+    if (!orderName.trim()) {
+      alert('אנא הזן שם להזמנה');
+      return;
+    }
+    try {
+      setLoading(true);
+      await saveOrder(orderName.trim(), inputs);
+      setShowSaveDialog(false);
+      setOrderName('');
+      alert('ההזמנה נשמרה בהצלחה!');
+      if (activeTab === 'orders') {
+        const orders = await getAllOrders();
+        setSavedOrders(orders);
+      }
+    } catch (error: any) {
+      console.error('Error saving order:', error);
+      alert(`שגיאה בשמירה: ${error.message || 'שגיאה לא ידועה'}`);
+    } finally {
+      setLoading(false);
+    }
   };
 
-  // Export to PDF
+  // Handle load order
+  const handleLoadOrder = (order: SavedOrder) => {
+    if (!order.id) return;
+    setInputs(order.inputs);
+    setProductsChanged(false); // Don't mark as changed when loading an order
+    setActiveTab('calculator');
+    alert('ההזמנה נטענה בהצלחה!');
+  };
+
+  // Handle delete order
+  const handleDeleteOrder = async (orderId: string) => {
+    if (!confirm('האם אתה בטוח שברצונך למחוק את ההזמנה?')) {
+      return;
+    }
+    try {
+      setLoading(true);
+      await deleteOrder(orderId);
+      const orders = await getAllOrders();
+      setSavedOrders(orders);
+      alert('ההזמנה נמחקה בהצלחה!');
+    } catch (error: any) {
+      console.error('Error deleting order:', error);
+      alert(`שגיאה במחיקה: ${error.message || 'שגיאה לא ידועה'}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Handle save products
+  const handleSaveProducts = async () => {
+    try {
+      setLoading(true);
+      await saveProducts(inputs.products);
+      setProductsChanged(false);
+      alert('המוצרים נשמרו בהצלחה!');
+    } catch (error: any) {
+      console.error('Error saving products:', error);
+      alert(`שגיאה בשמירת המוצרים: ${error.message || 'שגיאה לא ידועה'}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+
   const exportToPDF = async () => {
     if (!tableRef.current) return;
 
     try {
-      // Create a temporary container for PDF content
-      const pdfContainer = document.createElement('div');
-      pdfContainer.style.position = 'absolute';
-      pdfContainer.style.left = '-9999px';
-      pdfContainer.style.width = '1200px';
-      pdfContainer.style.backgroundColor = 'white';
-      pdfContainer.style.padding = '20px';
-      pdfContainer.style.fontFamily = 'Heebo, Arial, sans-serif';
-      pdfContainer.dir = 'rtl';
-      document.body.appendChild(pdfContainer);
-
-      // Add header
-      const header = document.createElement('div');
-      header.style.textAlign = 'center';
-      header.style.marginBottom = '20px';
-      header.innerHTML = `
-        <h1 style="font-size: 24px; font-weight: bold; margin-bottom: 10px;">הצעת מחיר - קופסאות כובעים</h1>
-        <div style="font-size: 14px; color: #666;">
-          <span>סוג מכולה: ${inputs.containerType === '20' ? `20 (${CONTAINER_CAPACITIES['20']} CBM)` : `40 (${CONTAINER_CAPACITIES['40']} CBM)`}</span>
-          <span style="margin: 0 20px;">|</span>
-          <span>תאריך: ${new Date().toLocaleDateString('he-IL')}</span>
-          ${viewMode === 'customer' ? '<div style="margin-top: 10px; color: #888;">(מצג לקוח)</div>' : ''}
-        </div>
-      `;
-      pdfContainer.appendChild(header);
-
-      // Clone the table
-      const tableClone = tableRef.current.cloneNode(true) as HTMLElement;
-      tableClone.style.width = '100%';
-      pdfContainer.appendChild(tableClone);
-
-      // Add summary
-      const summaryDiv = document.createElement('div');
-      summaryDiv.style.marginTop = '30px';
-      summaryDiv.style.padding = '15px';
-      summaryDiv.style.backgroundColor = '#f8f9fa';
-      summaryDiv.style.borderRadius = '5px';
-      summaryDiv.innerHTML = `
-        <h3 style="font-size: 16px; font-weight: bold; margin-bottom: 10px;">סיכום:</h3>
-        <div style="font-size: 14px; line-height: 1.8;">
-          <div>סך יחידות: ${summary.totalUnits.toLocaleString()}</div>
-          <div>נפח מנוצל: ${summary.totalCBMUtilized.toFixed(2)} / ${CONTAINER_CAPACITIES[inputs.containerType]} CBM</div>
-          ${viewMode === 'seller' ? `
-            <div>סך השקעה: $${summary.totalInvestmentUSD.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} <span style="font-size: 0.85em; color: #666;">₪${(summary.totalInvestmentUSD * inputs.exchangeRate).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span></div>
-            <div>רווח צפוי: $${(summary.totalProfitILS / inputs.exchangeRate).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} <span style="font-size: 0.85em; color: #666;">₪${summary.totalProfitILS.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span></div>
-            ${summary.totalUnknownExpensesILS > 0 ? `
-              <div>הוצאות לא ידועות ${inputs.unknownExpensesType === 'percent' ? `(${inputs.unknownExpensesValue}%)` : '(סכום קבוע)'}: $${(summary.totalUnknownExpensesILS / inputs.exchangeRate).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} <span style="font-size: 0.85em; color: #666;">₪${summary.totalUnknownExpensesILS.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span></div>
-            ` : ''}
-          ` : ''}
-        </div>
-      `;
-      pdfContainer.appendChild(summaryDiv);
-
-      // Convert to canvas
-      const canvas = await html2canvas(pdfContainer, {
+      const canvas = await html2canvas(tableRef.current, {
         scale: 2,
         useCORS: true,
         logging: false,
-        backgroundColor: '#ffffff',
       });
 
-      // Remove temporary container
-      document.body.removeChild(pdfContainer);
-
-      // Create PDF
       const imgData = canvas.toDataURL('image/png');
       const pdf = new jsPDF('l', 'mm', 'a4');
+
       const pdfWidth = pdf.internal.pageSize.getWidth();
       const pdfHeight = pdf.internal.pageSize.getHeight();
       const imgWidth = canvas.width;
@@ -383,6 +544,86 @@ const App: React.FC = () => {
           </div>
         </header>
 
+        {/* Tabs Navigation */}
+        <div className="bg-white shadow-md rounded-lg p-2 mb-6 flex gap-2">
+          <button
+            onClick={() => setActiveTab('calculator')}
+            className={`flex-1 px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+              activeTab === 'calculator'
+                ? 'bg-blue-600 text-white shadow-sm'
+                : 'bg-transparent text-gray-700 hover:bg-gray-100'
+            }`}
+          >
+            מחשבון
+          </button>
+          <button
+            onClick={() => setActiveTab('orders')}
+            className={`flex-1 px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+              activeTab === 'orders'
+                ? 'bg-blue-600 text-white shadow-sm'
+                : 'bg-transparent text-gray-700 hover:bg-gray-100'
+            }`}
+          >
+            הזמנות קודמות
+          </button>
+        </div>
+
+        {/* Orders Tab */}
+        {activeTab === 'orders' && (
+          <div className="bg-white shadow-lg rounded-xl p-6 mb-8 border border-gray-200">
+            <h2 className="text-xl font-bold mb-6 text-slate-800 border-b-2 border-blue-200 pb-3">
+              הזמנות שמורות
+            </h2>
+            {loading ? (
+              <div className="text-center py-8">
+                <p className="text-gray-500">טוען...</p>
+              </div>
+            ) : savedOrders.length === 0 ? (
+              <div className="text-center py-8">
+                <p className="text-gray-500">אין הזמנות שמורות</p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {savedOrders.map((order) => (
+                  <div
+                    key={order.id}
+                    className="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow"
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex-1">
+                        <h3 className="text-lg font-semibold text-gray-800 mb-1">
+                          {order.name}
+                        </h3>
+                        <p className="text-sm text-gray-500">
+                          עודכן לאחרונה: {order.updatedAt?.toDate?.().toLocaleDateString('he-IL') || 'לא זמין'}
+                        </p>
+                      </div>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => handleLoadOrder(order)}
+                          className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors text-sm font-medium"
+                        >
+                          טען
+                        </button>
+                        <button
+                          onClick={() => order.id && handleDeleteOrder(order.id)}
+                          className="px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700 transition-colors text-sm font-medium"
+                        >
+                          מחק
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Calculator Tab */}
+        {activeTab === 'calculator' && (
+          <>
+
         {/* User Input Section */}
         <div className="bg-white shadow-lg rounded-xl p-6 mb-8 border border-gray-200">
           <h2 className="text-xl font-bold mb-6 text-slate-800 border-b-2 border-blue-200 pb-3 flex items-center gap-2">
@@ -391,12 +632,13 @@ const App: React.FC = () => {
             </svg>
             נתוני הזמנה
           </h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6">
-            
-            {/* Container Selection */}
-            <div className="md:col-span-1 lg:col-span-1">
+          
+          {/* First Row: 4 Input Fields */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6 mb-4 md:mb-6">
+            {/* Container Type */}
+            <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">סוג מכולה</label>
-              <select 
+              <select
                 value={inputs.containerType}
                 onChange={(e) => setInputs(prev => ({ ...prev, containerType: e.target.value as '20' | '40' }))}
                 className="w-full border-gray-300 border rounded-md p-2.5 md:p-2 focus:ring-blue-500 focus:border-blue-500 text-base md:text-sm"
@@ -406,162 +648,296 @@ const App: React.FC = () => {
               </select>
             </div>
 
-            {/* Volume Mix */}
-            <div className="md:col-span-2 lg:col-span-2 bg-slate-50 p-3 md:p-4 rounded-md">
-              <label className="block text-sm font-medium text-gray-700 mb-3 md:mb-4">תמהיל נפח מבוקש (%)</label>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 md:gap-4">
-                {BOX_SIZES.map(size => {
-                  const hasQuantities = inputs.quantities && Object.values(inputs.quantities).some(q => q > 0);
-                  return (
-                    <div key={size.id}>
-                      <label className="block text-xs text-gray-500 mb-1">{size.name}</label>
-                      <div className="relative">
-                        <input 
-                          type="number"
-                          value={hasQuantities ? inputs.mixPercents[size.id as keyof UserInputs['mixPercents']].toFixed(2) : inputs.mixPercents[size.id as keyof UserInputs['mixPercents']]}
-                          onChange={(e) => handleMixChange(size.id as keyof UserInputs['mixPercents'], e.target.value)}
-                          className={`w-full border-gray-300 border rounded-md p-2 pr-2 ${hasQuantities ? 'bg-gray-100 text-gray-600' : ''}`}
-                          min="0"
-                          max="100"
-                          disabled={hasQuantities}
-                          readOnly={hasQuantities}
-                          step="0.01"
-                        />
-                        <span className="absolute left-2 top-2 text-gray-400">%</span>
-                      </div>
-                    </div>
-                  );
-                })}
+            {/* Exchange Rate */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">שער דולר (ILS)</label>
+              <input 
+                type="number"
+                step="0.01"
+                value={inputs.exchangeRate}
+                onChange={(e) => setInputs(prev => ({ ...prev, exchangeRate: parseFloat(e.target.value) || 0 }))}
+                className="w-full border-gray-300 border rounded-md p-2.5 md:p-2 text-base md:text-sm"
+              />
+            </div>
+
+            {/* Shipping Cost */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">מחיר המשלוח (USD)</label>
+              <div className="relative">
+                <input 
+                  type="number"
+                  step="0.01"
+                  value={inputs.shippingCostUSD}
+                  onChange={(e) => setInputs(prev => ({ ...prev, shippingCostUSD: parseFloat(e.target.value) || 0 }))}
+                  className="w-full border-gray-300 border rounded-md p-2.5 md:p-2 text-base md:text-sm pr-8"
+                  placeholder="0"
+                />
+                <span className="absolute left-2 top-2 text-gray-400 text-sm">$</span>
+              </div>
+              <p className="mt-1 text-xs text-gray-500">
+                מחיר השילוח יחולק יחסית לפי ה-CBM של כל מידה
+              </p>
+            </div>
+
+            {/* Unknown Expenses */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">הוצאות לא ידועות</label>
+              <div className="mb-2">
+                <div className="flex gap-3 bg-gray-50 p-1 rounded-md">
+                  <button
+                    type="button"
+                    onClick={() => setInputs(prev => ({ ...prev, unknownExpensesType: 'percent' }))}
+                    className={`flex-1 px-3 py-1.5 text-xs font-medium rounded transition-colors ${
+                      inputs.unknownExpensesType === 'percent'
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-transparent text-gray-700 hover:bg-gray-200'
+                    }`}
+                  >
+                    אחוזים
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setInputs(prev => ({ ...prev, unknownExpensesType: 'fixed' }))}
+                    className={`flex-1 px-3 py-1.5 text-xs font-medium rounded transition-colors ${
+                      inputs.unknownExpensesType === 'fixed'
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-transparent text-gray-700 hover:bg-gray-200'
+                    }`}
+                  >
+                    סכום קבוע
+                  </button>
+                </div>
+              </div>
+              <div className="relative">
+                <input 
+                  type="number"
+                  step={inputs.unknownExpensesType === 'percent' ? '0.01' : '1'}
+                  value={inputs.unknownExpensesValue}
+                  onChange={(e) => setInputs(prev => ({ ...prev, unknownExpensesValue: parseFloat(e.target.value) || 0 }))}
+                  className="w-full border-gray-300 border rounded-md p-2.5 md:p-2 text-base md:text-sm"
+                  placeholder={inputs.unknownExpensesType === 'percent' ? '5' : '0'}
+                />
+                <span className="absolute left-2 top-2 text-gray-400 text-sm">
+                  {inputs.unknownExpensesType === 'percent' ? '%' : '₪'}
+                </span>
+              </div>
+              <p className="mt-1 text-xs text-gray-500">
+                {inputs.unknownExpensesType === 'percent' 
+                  ? 'מסכום כולל של העסקה (מחיר לקוח)'
+                  : 'סכום קבוע בשקלים'}
+              </p>
+            </div>
+          </div>
+
+          {/* Second Row: Products Table - Full Width */}
+          <div className="bg-slate-50 p-3 md:p-4 rounded-md">
+              <div className="flex justify-between items-center mb-3 md:mb-4">
+                <label className="block text-sm font-medium text-gray-700">מוצרים</label>
+                <div className="flex gap-2">
+                  {productsChanged && (
+                    <button
+                      onClick={handleSaveProducts}
+                      disabled={loading}
+                      className="px-3 py-1.5 bg-green-600 text-white text-sm rounded-md hover:bg-green-700 transition-colors flex items-center gap-2 disabled:opacity-50"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                      </svg>
+                      שמור מוצרים
+                    </button>
+                  )}
+                  <button
+                    onClick={handleAddProduct}
+                    className="px-3 py-1.5 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700 transition-colors flex items-center gap-2"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                    </svg>
+                    הוסף מוצר
+                  </button>
+                </div>
+              </div>
+              
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-gray-200">
+                  <thead className="bg-gray-100">
+                    <tr>
+                      <th className="px-3 py-3 text-right text-sm font-medium text-gray-700 w-10 whitespace-nowrap"></th>
+                      <th className="px-3 py-3 text-right text-sm font-medium text-gray-700 whitespace-nowrap">שם</th>
+                      <th className="px-3 py-3 text-right text-sm font-medium text-gray-700 whitespace-nowrap">קרטון CBM מאסטר</th>
+                      <th className="px-3 py-3 text-right text-sm font-medium text-gray-700 whitespace-nowrap">יח' בקרטון</th>
+                      <th className="px-3 py-3 text-right text-sm font-medium text-gray-700 whitespace-nowrap">מחיר מפעל ($)</th>
+                      <th className="px-3 py-3 text-right text-sm font-medium text-gray-700 whitespace-nowrap">רווחיות (%)</th>
+                      <th className="px-3 py-3 text-right text-sm font-medium text-gray-700 whitespace-nowrap">% נפח</th>
+                      <th className="px-3 py-3 text-right text-sm font-medium text-gray-700 whitespace-nowrap">כמות</th>
+                      <th className="px-3 py-3 text-right text-sm font-medium text-gray-700 whitespace-nowrap"></th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white divide-y divide-gray-200">
+                    {inputs.products.map((product) => {
+                      const hasQuantity = product.quantity && product.quantity > 0;
+                      const isExpanded = expandedRows.has(product.id);
+                      return (
+                        <React.Fragment key={product.id}>
+                          <tr className="hover:bg-gray-50">
+                            <td className="px-3 py-3 whitespace-nowrap">
+                              <button
+                                onClick={() => toggleRowExpansion(product.id)}
+                                className="text-gray-500 hover:text-gray-700 transition-transform"
+                                title={isExpanded ? "סגור" : "הרחב"}
+                              >
+                                <svg 
+                                  className={`w-5 h-5 transition-transform ${isExpanded ? 'rotate-90' : ''}`} 
+                                  fill="none" 
+                                  stroke="currentColor" 
+                                  viewBox="0 0 24 24"
+                                >
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                                </svg>
+                              </button>
+                            </td>
+                            <td className="px-3 py-3 whitespace-nowrap">
+                              <input
+                                type="text"
+                                value={product.name}
+                                onChange={(e) => handleProductChange(product.id, 'name', e.target.value)}
+                                className="w-full border-gray-300 border rounded-md px-3 py-2 text-sm min-w-[120px]"
+                                placeholder="שם מוצר"
+                              />
+                            </td>
+                            <td className="px-3 py-3 whitespace-nowrap">
+                              <input
+                                type="number"
+                                value={product.masterCartonCBM || ''}
+                                onChange={(e) => handleProductChange(product.id, 'masterCartonCBM', parseFloat(e.target.value) || 0)}
+                                className="w-full border-gray-300 border rounded-md px-3 py-2 text-sm min-w-[100px]"
+                                placeholder="0.059"
+                                step="0.001"
+                              />
+                            </td>
+                            <td className="px-3 py-3 whitespace-nowrap">
+                              <input
+                                type="number"
+                                value={product.unitsPerCarton || ''}
+                                onChange={(e) => handleProductChange(product.id, 'unitsPerCarton', parseInt(e.target.value) || 1)}
+                                className="w-full border-gray-300 border rounded-md px-3 py-2 text-sm min-w-[100px]"
+                                placeholder="1"
+                                min="1"
+                              />
+                            </td>
+                            <td className="px-3 py-3 whitespace-nowrap">
+                              <input
+                                type="number"
+                                value={product.factoryPriceUSD || ''}
+                                onChange={(e) => handleProductChange(product.id, 'factoryPriceUSD', parseFloat(e.target.value) || 0)}
+                                className="w-full border-gray-300 border rounded-md px-3 py-2 text-sm min-w-[100px]"
+                                placeholder="0"
+                                step="0.01"
+                              />
+                            </td>
+                            <td className="px-3 py-3 whitespace-nowrap">
+                              <input
+                                type="number"
+                                value={product.profitMargin || ''}
+                                onChange={(e) => handleProductChange(product.id, 'profitMargin', parseFloat(e.target.value) || 0)}
+                                className="w-full border-gray-300 border rounded-md px-3 py-2 text-sm min-w-[100px]"
+                                placeholder="40"
+                                step="0.1"
+                              />
+                            </td>
+                            <td className="px-3 py-3 whitespace-nowrap">
+                              <input
+                                type="number"
+                                value={hasQuantity ? product.mixPercent?.toFixed(2) || '' : product.mixPercent || ''}
+                                onChange={(e) => handleMixPercentChange(product.id, e.target.value)}
+                                className={`w-full border-gray-300 border rounded-md px-3 py-2 text-sm min-w-[100px] ${hasQuantity ? 'bg-gray-100 text-gray-600' : ''}`}
+                                disabled={hasQuantity}
+                                readOnly={hasQuantity}
+                                placeholder="0"
+                                step="0.01"
+                              />
+                            </td>
+                            <td className="px-3 py-3 whitespace-nowrap">
+                              <input
+                                type="number"
+                                value={product.quantity || ''}
+                                onChange={(e) => handleQuantityChange(product.id, e.target.value)}
+                                className="w-full border-gray-300 border rounded-md px-3 py-2 text-sm min-w-[100px]"
+                                placeholder="0"
+                                min="0"
+                                step="1"
+                              />
+                            </td>
+                            <td className="px-3 py-3 whitespace-nowrap">
+                              {inputs.products.length > 1 && (
+                                <button
+                                  onClick={() => handleRemoveProduct(product.id)}
+                                  className="text-red-600 hover:text-red-800"
+                                  title="מחק מוצר"
+                                >
+                                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                  </svg>
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                          {isExpanded && (
+                            <tr className="bg-gray-50">
+                              <td colSpan={9} className="px-4 py-4">
+                                <div className="max-w-3xl mx-auto">
+                                  <div className="bg-white rounded-lg border border-gray-200 p-5 shadow-sm">
+                                    <div className="font-semibold text-gray-800 mb-4 text-base border-b border-gray-200 pb-2">פרטים נוספים</div>
+                                    
+                                    {/* Product Details Grid */}
+                                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+                                      <div className="bg-gray-50 rounded-md p-3">
+                                        <div className="text-xs text-gray-500 mb-1">CBM מאסטר</div>
+                                        <div className="text-sm font-semibold text-gray-800">{product.masterCartonCBM.toFixed(3)}</div>
+                                      </div>
+                                      <div className="bg-gray-50 rounded-md p-3">
+                                        <div className="text-xs text-gray-500 mb-1">יחידות בקרטון</div>
+                                        <div className="text-sm font-semibold text-gray-800">{product.unitsPerCarton}</div>
+                                      </div>
+                                      <div className="bg-gray-50 rounded-md p-3">
+                                        <div className="text-xs text-gray-500 mb-1">מחיר מפעל</div>
+                                        <div className="text-sm font-semibold text-gray-800">${product.factoryPriceUSD.toFixed(2)}</div>
+                                      </div>
+                                      <div className="bg-gray-50 rounded-md p-3">
+                                        <div className="text-xs text-gray-500 mb-1">רווחיות</div>
+                                        <div className="text-sm font-semibold text-gray-800">{product.profitMargin}%</div>
+                                      </div>
+                                    </div>
+                                    
+                                    {/* Product Description */}
+                                    <div>
+                                      <label className="block font-medium text-sm text-gray-700 mb-2">תיאור/הסבר על המוצר:</label>
+                                      <textarea
+                                        value={product.description}
+                                        onChange={(e) => handleProductChange(product.id, 'description', e.target.value)}
+                                        className="w-full border-gray-300 border rounded-md px-3 py-2 text-sm resize-y min-h-[100px] focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                                        placeholder="הכנס תיאור/הסבר על המוצר (כולל מידות אם רלוונטי)..."
+                                        rows={4}
+                                      />
+                                    </div>
+                                  </div>
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
               <p className={`mt-2 text-sm ${totalPercents !== 100 ? 'text-red-500' : 'text-green-600'}`}>
                 סך הכל: {totalPercents.toFixed(2)}% {totalPercents !== 100 && '(חייב להיות 100%)'}
-                {inputs.quantities && Object.values(inputs.quantities).some(q => q > 0) && (
-                  <span className="text-xs text-gray-500 block mt-1">(מחושב אוטומטית מהכמויות)</span>
-                )}
               </p>
-              
-              {/* Quantities Input */}
-              <div className="mt-4 md:mt-6 pt-3 md:pt-4 border-t border-gray-300">
-                <label className="block text-sm font-medium text-gray-700 mb-3 md:mb-4">הזנת כמויות לפי מידות (יחידות)</label>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 md:gap-4">
-                  {BOX_SIZES.map(size => (
-                    <div key={size.id}>
-                      <label className="block text-xs text-gray-500 mb-1">{size.name}</label>
-                      <input 
-                        type="number"
-                        value={inputs.quantities?.[size.id as keyof NonNullable<UserInputs['quantities']>] || ''}
-                        onChange={(e) => handleQuantityChange(size.id as keyof NonNullable<UserInputs['quantities']>, e.target.value)}
-                        className="w-full border-gray-300 border rounded-md p-2 focus:ring-blue-500 focus:border-blue-500"
-                        min="0"
-                        step="1"
-                        placeholder="0"
-                      />
-                    </div>
-                  ))}
-                </div>
-                <p className="mt-2 text-xs text-gray-500 italic">
-                  הזן כמויות ישירות (יחידות) - האחוזים יתעדכנו אוטומטית לפי הנפח
-                </p>
-              </div>
-            </div>
-
-            {/* Other Costs */}
-            <div className="md:col-span-1 lg:col-span-1 space-y-3 md:space-y-4">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 md:gap-2">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">רווחיות (%)</label>
-                  <input 
-                    type="number"
-                    value={inputs.targetMargin}
-                    onChange={(e) => setInputs(prev => ({ ...prev, targetMargin: parseFloat(e.target.value) || 0 }))}
-                    className="w-full border-gray-300 border rounded-md p-2.5 md:p-2 text-base md:text-sm"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">שער דולר (ILS)</label>
-                  <input 
-                    type="number"
-                    step="0.01"
-                    value={inputs.exchangeRate}
-                    onChange={(e) => setInputs(prev => ({ ...prev, exchangeRate: parseFloat(e.target.value) || 0 }))}
-                    className="w-full border-gray-300 border rounded-md p-2.5 md:p-2 text-base md:text-sm"
-                  />
-                </div>
-              </div>
-              
-              {/* Shipping Cost */}
-              <div className="border-t border-gray-200 pt-3 md:pt-4 mt-3 md:mt-4">
-                <label className="block text-sm font-medium text-gray-700 mb-1">מחיר המשלוח (USD)</label>
-                <div className="relative">
-                  <input 
-                    type="number"
-                    step="0.01"
-                    value={inputs.shippingCostUSD}
-                    onChange={(e) => setInputs(prev => ({ ...prev, shippingCostUSD: parseFloat(e.target.value) || 0 }))}
-                    className="w-full border-gray-300 border rounded-md p-2.5 md:p-2 text-base md:text-sm"
-                    placeholder="0"
-                  />
-                  <span className="absolute left-2 top-2 text-gray-400 text-sm">$</span>
-                </div>
-                <p className="mt-1 text-xs text-gray-500">
-                  מחיר השילוח יחולק יחסית לפי ה-CBM של כל מידה
-                </p>
-              </div>
-              
-              {/* Unknown Expenses */}
-              <div className="border-t border-gray-200 pt-3 md:pt-4 mt-3 md:mt-4">
-                <label className="block text-sm font-medium text-gray-700 mb-2">הוצאות לא ידועות</label>
-                <div className="mb-2">
-                  <div className="flex gap-3 bg-gray-50 p-1 rounded-md">
-                    <button
-                      type="button"
-                      onClick={() => setInputs(prev => ({ ...prev, unknownExpensesType: 'percent' }))}
-                      className={`flex-1 px-3 py-1.5 text-xs font-medium rounded transition-colors ${
-                        inputs.unknownExpensesType === 'percent'
-                          ? 'bg-blue-600 text-white'
-                          : 'bg-transparent text-gray-700 hover:bg-gray-200'
-                      }`}
-                    >
-                      אחוזים
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setInputs(prev => ({ ...prev, unknownExpensesType: 'fixed' }))}
-                      className={`flex-1 px-3 py-1.5 text-xs font-medium rounded transition-colors ${
-                        inputs.unknownExpensesType === 'fixed'
-                          ? 'bg-blue-600 text-white'
-                          : 'bg-transparent text-gray-700 hover:bg-gray-200'
-                      }`}
-                    >
-                      סכום קבוע
-                    </button>
-                  </div>
-                </div>
-                <div className="relative">
-                  <input 
-                    type="number"
-                    step={inputs.unknownExpensesType === 'percent' ? '0.01' : '1'}
-                    value={inputs.unknownExpensesValue}
-                    onChange={(e) => setInputs(prev => ({ ...prev, unknownExpensesValue: parseFloat(e.target.value) || 0 }))}
-                    className="w-full border-gray-300 border rounded-md p-2.5 md:p-2 text-base md:text-sm"
-                    placeholder={inputs.unknownExpensesType === 'percent' ? '5' : '0'}
-                  />
-                  <span className="absolute left-2 top-2 text-gray-400 text-sm">
-                    {inputs.unknownExpensesType === 'percent' ? '%' : '₪'}
-                  </span>
-                </div>
-                <p className="mt-1 text-xs text-gray-500">
-                  {inputs.unknownExpensesType === 'percent' 
-                    ? 'מסכום כולל של העסקה (מחיר לקוח)'
-                    : 'סכום קבוע בשקלים'}
-                </p>
-              </div>
-            </div>
-
           </div>
         </div>
 
-        {/* View Mode Toggle and Export Button */}
+        {/* View Mode Toggle, Save Order and Export Button */}
         <div className="bg-white shadow-md rounded-lg p-4 md:p-6 mb-4 md:mb-6">
           <div className="flex flex-col gap-4">
             <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 md:gap-4">
@@ -569,89 +945,87 @@ const App: React.FC = () => {
               <div className="flex gap-2 bg-gray-100 p-1 rounded-lg w-full sm:w-auto">
                 <button
                   onClick={() => setViewMode('seller')}
-                  className={`flex-1 sm:flex-none px-3 md:px-4 py-2 rounded-md text-sm font-medium transition-all duration-200 ${
+                  className={`flex-1 sm:flex-none px-4 py-2 rounded-md text-sm font-medium transition-colors ${
                     viewMode === 'seller'
-                      ? 'bg-blue-600 text-white shadow-md'
+                      ? 'bg-blue-600 text-white shadow-sm'
                       : 'bg-transparent text-gray-700 hover:bg-gray-200'
                   }`}
                 >
-                  מוכר (מלא)
+                  מוכר
                 </button>
                 <button
                   onClick={() => setViewMode('customer')}
-                  className={`flex-1 sm:flex-none px-3 md:px-4 py-2 rounded-md text-sm font-medium transition-all duration-200 ${
+                  className={`flex-1 sm:flex-none px-4 py-2 rounded-md text-sm font-medium transition-colors ${
                     viewMode === 'customer'
-                      ? 'bg-blue-600 text-white shadow-md'
+                      ? 'bg-blue-600 text-white shadow-sm'
                       : 'bg-transparent text-gray-700 hover:bg-gray-200'
                   }`}
                 >
-                  לקוח (מוגבל)
+                  לקוח
                 </button>
               </div>
-              {viewMode === 'customer' && (
-                <span className="text-xs text-gray-500 bg-blue-50 px-3 py-1 rounded-full border border-blue-200 w-full sm:w-auto text-center sm:text-right">
-                  מצג לקוח - עמודות פנימיות מוסתרות
-                </span>
-              )}
-            </div>
-            
-            <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-center">
+              <button
+                onClick={() => setShowSaveDialog(true)}
+                className="px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors text-sm font-medium flex items-center gap-2"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" />
+                </svg>
+                שמור הזמנה
+              </button>
               <button
                 onClick={exportToPDF}
-                className="w-full sm:w-auto px-6 py-2.5 bg-gradient-to-r from-green-600 to-green-700 text-white rounded-lg hover:from-green-700 hover:to-green-800 transition-all duration-200 font-medium flex items-center justify-center gap-2 shadow-md hover:shadow-lg transform hover:scale-105"
+                className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors text-sm font-medium flex items-center gap-2"
               >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                 </svg>
-                ייצוא ל-PDF
+                ייצא ל-PDF
               </button>
-              
-              {/* Hidden Columns Panel */}
-              {(() => {
-                const hiddenColumns = Object.entries(columnConfig)
-                  .filter(([key, config]) => {
-                    if (viewMode === 'customer' && config.internal) return false;
-                    const isVisible = columnVisibility[key] ?? config.visible;
-                    return !isVisible;
-                  })
-                  .map(([key, config]) => ({ key, label: config.label }));
-                
-                if (hiddenColumns.length === 0) return null;
-                
-                return (
-                  <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 shadow-sm">
-                    <div className="flex items-center gap-2 mb-2">
-                      <svg className="w-4 h-4 text-yellow-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                      </svg>
-                      <span className="text-xs font-semibold text-yellow-800">עמודות מוסתרות ({hiddenColumns.length})</span>
-                    </div>
-                    <div className="flex flex-wrap gap-1.5">
-                      {hiddenColumns.map(({ key, label }) => (
-                        <button
-                          key={key}
-                          onClick={() => {
-                            setColumnVisibility(prev => ({
-                              ...prev,
-                              [key]: true
-                            }));
-                          }}
-                          className="text-xs px-2 py-1 bg-yellow-100 hover:bg-yellow-200 text-yellow-800 rounded-md transition-colors flex items-center gap-1"
-                          title={`הצג ${label}`}
-                        >
-                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                          </svg>
-                          {label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                );
-              })()}
             </div>
           </div>
         </div>
+
+        {/* Hidden Columns Panel */}
+        {(() => {
+          const hiddenColumns = Object.keys(columnConfig).filter(key => {
+            const config = columnConfig[key];
+            return config && !(columnVisibility[key] ?? config.visible);
+          });
+
+          if (hiddenColumns.length === 0) return null;
+
+          return (
+            <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-4 md:mb-6">
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-sm font-semibold text-yellow-800">עמודות מוסתרות</h3>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {hiddenColumns.map(key => {
+                  const label = columnConfig[key]?.label || key;
+                  return (
+                    <button
+                      key={key}
+                      onClick={() => {
+                        setColumnVisibility(prev => ({
+                          ...prev,
+                          [key]: true
+                        }));
+                      }}
+                      className="text-xs px-2 py-1 bg-yellow-100 hover:bg-yellow-200 text-yellow-800 rounded-md transition-colors flex items-center gap-1"
+                      title={`הצג ${label}`}
+                    >
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                      </svg>
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })()}
 
         {/* Results Table */}
         <div className="bg-white shadow-lg rounded-lg overflow-hidden mb-6 md:mb-8 border border-gray-200" ref={tableRef}>
@@ -663,9 +1037,7 @@ const App: React.FC = () => {
                   {/* Fixed Columns */}
                   {(() => {
                     const fixedColumns = [
-                      { key: 'size', label: 'מידה', border: false },
-                      { key: 'dimensions', label: 'מידות (cm)', border: false },
-                      { key: 'internalDimensions', label: 'פנימי (cm)', border: false },
+                      { key: 'size', label: 'שם', border: false },
                       { key: 'masterCBM', label: 'CBM מאסטר', border: false },
                       { key: 'unitsPerCarton', label: "יח' בקרטון", border: false },
                     ];
@@ -701,7 +1073,7 @@ const App: React.FC = () => {
                       { key: 'totalCBM', label: 'CBM כולל' },
                       { key: 'totalUnits', label: 'כמות יחידות' },
                       { key: 'factoryPrice', label: 'מחיר יחידה - מפעל' },
-                      { key: 'totalExpenses', label: '5% תוספת' },
+                      { key: 'totalExpenses', label: `${inputs.unknownExpensesValue}% תוספת` },
                       { key: 'totalFactoryPrice', label: 'מחיר מפעל לכמות' },
                       { key: 'price', label: 'מחיר יחידה - לקוח' },
                       { key: 'totalCustomerPrice', label: 'מחיר לקוח לכמות' },
@@ -738,14 +1110,11 @@ const App: React.FC = () => {
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
-                {results.map((res) => (
-                  <tr key={res.size.id} className="hover:bg-slate-50 transition-colors">
+                {results.map((res, idx) => (
+                  <tr key={res.size.id || idx} className="hover:bg-gray-50">
                     {isColumnVisible('size') && <td className="px-4 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{res.size.name}</td>}
-                    {isColumnVisible('dimensions') && <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500">{res.size.dimensions}</td>}
-                    {isColumnVisible('internalDimensions') && <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500">{res.size.internalDimensions}</td>}
-                    {isColumnVisible('masterCBM') && <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500">{res.size.masterCBM}</td>}
-                    {isColumnVisible('unitsPerCarton') && <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500">{res.size.unitsPerCarton}</td>}
-                    
+                    {isColumnVisible('masterCBM') && <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-700">{res.size.masterCBM.toFixed(3)}</td>}
+                    {isColumnVisible('unitsPerCarton') && <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-700">{res.size.unitsPerCarton}</td>}
                     {isColumnVisible('totalCBM') && <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-700 font-semibold">{res.totalCBM.toFixed(3)}</td>}
                     {isColumnVisible('totalUnits') && <td className="px-4 py-4 whitespace-nowrap text-sm text-indigo-700 font-bold">{res.totalUnits.toLocaleString()}</td>}
                     {isColumnVisible('factoryPrice') && (
@@ -754,12 +1123,15 @@ const App: React.FC = () => {
                         <div className="text-gray-600 text-xs">₪{(res.size.factoryPriceUSD * inputs.exchangeRate).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
                       </td>
                     )}
-                    {isColumnVisible('totalExpenses') && (
-                      <td className="px-4 py-4 whitespace-nowrap text-sm border-l border-gray-100">
-                        <div className="text-orange-900 font-bold">${(res.size.factoryPriceUSD * 1.05).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
-                        <div className="text-orange-700 text-xs">₪{(res.size.factoryPriceUSD * inputs.exchangeRate * 1.05).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
-                      </td>
-                    )}
+                    {isColumnVisible('totalExpenses') && (() => {
+                      const surchargeMultiplier = 1 + (inputs.unknownExpensesValue / 100);
+                      return (
+                        <td className="px-4 py-4 whitespace-nowrap text-sm border-l border-gray-100">
+                          <div className="text-orange-900 font-bold">${(res.size.factoryPriceUSD * surchargeMultiplier).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                          <div className="text-orange-700 text-xs">₪{(res.size.factoryPriceUSD * inputs.exchangeRate * surchargeMultiplier).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                        </td>
+                      );
+                    })()}
                     {isColumnVisible('totalFactoryPrice') && (
                       <td className="px-4 py-4 whitespace-nowrap text-sm border-l border-gray-100">
                         <div className="text-gray-900 font-bold">${res.totalFactoryPriceUSD.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
@@ -784,7 +1156,11 @@ const App: React.FC = () => {
                         <div className="text-emerald-600 font-bold text-xs">₪{res.totalProfitILS.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
                       </td>
                     )}
-                    {isColumnVisible('marginPercent') && <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500">{inputs.targetMargin}%</td>}
+                    {isColumnVisible('marginPercent') && (
+                      <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500">
+                        {(res as any).productProfitMargin || inputs.products.find(p => p.id === res.size.id)?.profitMargin || 0}%
+                      </td>
+                    )}
                     {isColumnVisible('shippingPerUnit') && (
                       <td className="px-4 py-4 whitespace-nowrap text-sm border-l border-gray-100">
                         <div className="text-purple-800 font-semibold">${res.shippingPerUnitUSD.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
@@ -805,8 +1181,6 @@ const App: React.FC = () => {
                   {(() => {
                     const fixedCols = [
                       isColumnVisible('size'),
-                      isColumnVisible('dimensions'),
-                      isColumnVisible('internalDimensions'),
                       isColumnVisible('masterCBM'),
                       isColumnVisible('unitsPerCarton'),
                     ].filter(Boolean).length;
@@ -850,10 +1224,11 @@ const App: React.FC = () => {
                           const totalFactoryPriceBase = results.reduce((sum, curr) => sum + (curr.size.factoryPriceUSD * curr.totalUnits), 0);
                           const totalUnits = results.reduce((sum, curr) => sum + curr.totalUnits, 0);
                           const avgFactoryPrice = totalUnits > 0 ? totalFactoryPriceBase / totalUnits : 0;
+                          const surchargePercent = inputs.unknownExpensesValue / 100;
                           return (
                             <td className="px-4 py-4 border-l border-gray-100">
-                              <div className="text-orange-900 font-bold">${(avgFactoryPrice * 1.05).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
-                              <div className="text-orange-700 text-xs">₪{(avgFactoryPrice * inputs.exchangeRate * 1.05).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                              <div className="text-orange-900 font-bold">${(avgFactoryPrice * surchargePercent).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                              <div className="text-orange-700 text-xs">₪{(avgFactoryPrice * inputs.exchangeRate * surchargePercent).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
                             </td>
                           );
                         })()}
@@ -886,8 +1261,6 @@ const App: React.FC = () => {
                           </td>
                         )}
                         {shippingCol > 0 && (() => {
-                          const totalShippingILS = results.reduce((sum, curr) => sum + (curr.shippingPerUnitILS * curr.totalUnits), 0);
-                          const totalShippingUSD = totalShippingILS / inputs.exchangeRate;
                           return (
                             <td className="px-4 py-4 border-l border-gray-100">
                               <div className="text-purple-800 font-semibold">-</div>
@@ -926,35 +1299,41 @@ const App: React.FC = () => {
                 </svg>
               </div>
             </div>
-            <p className="text-2xl md:text-3xl font-bold text-indigo-900">{summary.totalUnits.toLocaleString()}</p>
-          </div>
-          <div className="bg-gradient-to-br from-slate-50 to-slate-100 border-r-4 border-slate-500 p-4 md:p-6 rounded-xl shadow-md hover:shadow-lg transition-shadow">
-            <div className="flex items-center justify-between mb-2">
-              <h3 className="text-xs md:text-sm font-semibold text-slate-700">תפוסת נפח (CBM)</h3>
-              <div className="w-8 h-8 md:w-10 md:h-10 bg-slate-500 rounded-lg flex items-center justify-center flex-shrink-0">
-                <svg className="w-4 h-4 md:w-6 md:h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
-                </svg>
-              </div>
+            <div>
+              <p className="text-2xl md:text-3xl font-bold text-indigo-900">{summary.totalUnits.toLocaleString()}</p>
+              <p className="text-sm md:text-base font-semibold text-indigo-700">יחידות</p>
             </div>
-            <p className="text-2xl md:text-3xl font-bold text-slate-900">
-              {summary.totalCBMUtilized.toFixed(2)} <span className="text-base md:text-lg text-slate-600">/ {CONTAINER_CAPACITIES[inputs.containerType]}</span>
-            </p>
           </div>
           <div className="bg-gradient-to-br from-blue-50 to-blue-100 border-r-4 border-blue-500 p-4 md:p-6 rounded-xl shadow-md hover:shadow-lg transition-shadow">
             <div className="flex items-center justify-between mb-2">
-              <h3 className="text-xs md:text-sm font-semibold text-blue-700">סך השקעה (דולר)</h3>
+              <h3 className="text-xs md:text-sm font-semibold text-blue-700">נפח מנוצל</h3>
               <div className="w-8 h-8 md:w-10 md:h-10 bg-blue-500 rounded-lg flex items-center justify-center flex-shrink-0">
                 <svg className="w-4 h-4 md:w-6 md:h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4 4 0 003 15z" />
                 </svg>
               </div>
             </div>
             <div>
-              <p className="text-2xl md:text-3xl font-bold text-blue-900">${summary.totalInvestmentUSD.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
-              <p className="text-sm md:text-base font-semibold text-blue-700">₪{(summary.totalInvestmentUSD * inputs.exchangeRate).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+              <p className="text-2xl md:text-3xl font-bold text-blue-900">{summary.totalCBMUtilized.toFixed(2)}</p>
+              <p className="text-sm md:text-base font-semibold text-blue-700">/ {CONTAINER_CAPACITIES[inputs.containerType]} CBM</p>
             </div>
           </div>
+          {viewMode === 'seller' && (
+            <div className="bg-gradient-to-br from-purple-50 to-purple-100 border-r-4 border-purple-500 p-4 md:p-6 rounded-xl shadow-md hover:shadow-lg transition-shadow">
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-xs md:text-sm font-semibold text-purple-700">סך השקעה</h3>
+                <div className="w-8 h-8 md:w-10 md:h-10 bg-purple-500 rounded-lg flex items-center justify-center flex-shrink-0">
+                  <svg className="w-4 h-4 md:w-6 md:h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                </div>
+              </div>
+              <div>
+                <p className="text-2xl md:text-3xl font-bold text-purple-900">${summary.totalInvestmentUSD.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+                <p className="text-sm md:text-base font-semibold text-purple-700">₪{(summary.totalInvestmentUSD * inputs.exchangeRate).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+              </div>
+            </div>
+          )}
           <div className="bg-gradient-to-br from-emerald-50 to-emerald-100 border-r-4 border-emerald-500 p-4 md:p-6 rounded-xl shadow-md hover:shadow-lg transition-shadow">
             <div className="flex items-center justify-between mb-2">
               <h3 className="text-xs md:text-sm font-semibold text-emerald-700">סך רווח צפוי</h3>
@@ -988,10 +1367,52 @@ const App: React.FC = () => {
             </div>
           )}
         </div>
-        
-        <footer className="mt-12 text-center text-gray-500 text-sm">
-          <p>© {new Date().getFullYear()} מערכת חישוב לוגיסטית לקופסאות כובעים</p>
-        </footer>
+          </>
+        )}
+
+        {/* Save Order Dialog */}
+        {showSaveDialog && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" dir="rtl">
+            <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
+              <h3 className="text-xl font-bold mb-4 text-gray-800">שמור הזמנה</h3>
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  שם ההזמנה:
+                </label>
+                <input
+                  type="text"
+                  value={orderName}
+                  onChange={(e) => setOrderName(e.target.value)}
+                  className="w-full border-gray-300 border rounded-md px-3 py-2 text-base"
+                  placeholder="הזן שם להזמנה"
+                  onKeyPress={(e) => {
+                    if (e.key === 'Enter') {
+                      handleSaveOrder();
+                    }
+                  }}
+                />
+              </div>
+              <div className="flex gap-2 justify-end">
+                <button
+                  onClick={() => {
+                    setShowSaveDialog(false);
+                    setOrderName('');
+                  }}
+                  className="px-4 py-2 bg-gray-300 text-gray-700 rounded-md hover:bg-gray-400 transition-colors"
+                >
+                  ביטול
+                </button>
+                <button
+                  onClick={handleSaveOrder}
+                  disabled={loading || !orderName.trim()}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors disabled:opacity-50"
+                >
+                  {loading ? 'שומר...' : 'שמור'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
