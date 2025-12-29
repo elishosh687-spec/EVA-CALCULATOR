@@ -10,6 +10,7 @@ export interface Product {
   profitMargin: number; // Individual profit margin percentage
   mixPercent?: number; // Percentage of container volume (calculated or user input)
   quantity?: number; // Direct quantity input (optional)
+  active?: boolean; // Whether the product is active (included in calculations and displayed)
 }
 
 export interface BoxSizeData {

@@ -26,6 +26,7 @@ const getDefaultProducts = (): Product[] => {
       factoryPriceUSD: 4.48,
       profitMargin: 40,
       mixPercent: 0,
+      active: true,
     },
     {
       id: generateProductId(),
@@ -37,6 +38,7 @@ const getDefaultProducts = (): Product[] => {
       factoryPriceUSD: 5.51,
       profitMargin: 40,
       mixPercent: 0,
+      active: true,
     },
     {
       id: generateProductId(),
@@ -48,6 +50,7 @@ const getDefaultProducts = (): Product[] => {
       factoryPriceUSD: 5.79,
       profitMargin: 40,
       mixPercent: 0,
+      active: true,
     },
   ];
 };
@@ -151,6 +154,7 @@ const App: React.FC = () => {
           factoryPriceUSD: 0,
           profitMargin: 40,
           mixPercent: 0,
+          active: true,
         }
       ]
     }));
@@ -164,7 +168,7 @@ const App: React.FC = () => {
   };
 
 
-  const handleProductChange = (productId: string, field: keyof Product, value: string | number) => {
+  const handleProductChange = (productId: string, field: keyof Product, value: string | number | boolean) => {
     setInputs(prev => ({
       ...prev,
       products: prev.products.map(p =>
@@ -216,8 +220,11 @@ const App: React.FC = () => {
   const results = useMemo(() => {
     const totalCBM = CONTAINER_CAPACITIES[inputs.containerType];
     
+    // Filter only active products for calculations
+    const activeProducts = inputs.products.filter(p => p.active !== false);
+    
     // Step 1: Preliminary calculations for each product to get total units
-    const preliminaryCalculations = inputs.products.map(product => {
+    const preliminaryCalculations = activeProducts.map(product => {
       const masterCBM = product.masterCartonCBM;
       let totalUnits = 0;
       let allocatedCBM = 0;
@@ -384,7 +391,9 @@ const App: React.FC = () => {
     };
   }, [results, inputs.unknownExpensesType, inputs.unknownExpensesValue, inputs.exchangeRate]);
 
-  const totalPercents = inputs.products.reduce((sum, p) => sum + (p.mixPercent || 0), 0);
+  const totalPercents = inputs.products
+    .filter(p => p.active !== false)
+    .reduce((sum, p) => sum + (p.mixPercent || 0), 0);
 
   // Load saved products on mount
   useEffect(() => {
@@ -460,7 +469,15 @@ const App: React.FC = () => {
   // Handle load order
   const handleLoadOrder = (order: SavedOrder) => {
     if (!order.id) return;
-    setInputs(order.inputs);
+    // Ensure all products have active field (default to true if not set)
+    const inputsWithActive = {
+      ...order.inputs,
+      products: order.inputs.products.map((product: Product) => ({
+        ...product,
+        active: product.active !== undefined ? product.active : true
+      }))
+    };
+    setInputs(inputsWithActive);
     setProductsChanged(false); // Don't mark as changed when loading an order
     setActiveTab('calculator');
     alert('ההזמנה נטענה בהצלחה!');
@@ -763,6 +780,7 @@ const App: React.FC = () => {
                   <thead className="bg-gray-100">
                     <tr>
                       <th className="px-3 py-3 text-right text-sm font-medium text-gray-700 w-10 whitespace-nowrap"></th>
+                      <th className="px-3 py-3 text-right text-sm font-medium text-gray-700 whitespace-nowrap w-16">פעיל</th>
                       <th className="px-3 py-3 text-right text-sm font-medium text-gray-700 whitespace-nowrap">שם</th>
                       <th className="px-3 py-3 text-right text-sm font-medium text-gray-700 whitespace-nowrap">קרטון CBM מאסטר</th>
                       <th className="px-3 py-3 text-right text-sm font-medium text-gray-700 whitespace-nowrap">יח' בקרטון</th>
@@ -779,7 +797,7 @@ const App: React.FC = () => {
                       const isExpanded = expandedRows.has(product.id);
                       return (
                         <React.Fragment key={product.id}>
-                          <tr className="hover:bg-gray-50">
+                          <tr className={`hover:bg-gray-50 ${product.active === false ? 'opacity-50 bg-gray-100' : ''}`}>
                             <td className="px-3 py-3 whitespace-nowrap">
                               <button
                                 onClick={() => toggleRowExpansion(product.id)}
@@ -795,6 +813,16 @@ const App: React.FC = () => {
                                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                                 </svg>
                               </button>
+                            </td>
+                            <td className="px-3 py-3 whitespace-nowrap">
+                              <input
+                                type="checkbox"
+                                checked={product.active !== false}
+                                onChange={(e) => handleProductChange(product.id, 'active', e.target.checked)}
+                                className="w-5 h-5 cursor-pointer"
+                                style={{ accentColor: '#2563eb' }}
+                                title={product.active === false ? "מוצר לא פעיל - לא יוצג בחישובים" : "מוצר פעיל"}
+                              />
                             </td>
                             <td className="px-3 py-3 whitespace-nowrap">
                               <input
@@ -884,7 +912,7 @@ const App: React.FC = () => {
                           </tr>
                           {isExpanded && (
                             <tr className="bg-gray-50">
-                              <td colSpan={9} className="px-4 py-4">
+                              <td colSpan={10} className="px-4 py-4">
                                 <div className="max-w-3xl mx-auto">
                                   <div className="bg-white rounded-lg border border-gray-200 p-5 shadow-sm">
                                     <div className="font-semibold text-gray-800 mb-4 text-base border-b border-gray-200 pb-2">פרטים נוספים</div>

@@ -111,7 +111,13 @@ export const getSavedProducts = async (): Promise<Product[]> => {
     // Get the most recent products document
     const latestDoc = querySnapshot.docs[0];
     const data = latestDoc.data();
-    return data.products || [];
+    const products = data.products || [];
+    
+    // Ensure all products have active field (default to true if not set)
+    return products.map((product: Product) => ({
+      ...product,
+      active: product.active !== undefined ? product.active : true
+    }));
   } catch (error) {
     console.error('Error getting products:', error);
     throw error;
