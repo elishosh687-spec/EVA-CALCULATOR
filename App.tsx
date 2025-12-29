@@ -160,11 +160,32 @@ const App: React.FC = () => {
     }));
   };
 
-  const handleRemoveProduct = (productId: string) => {
-    setInputs(prev => ({
-      ...prev,
-      products: prev.products.filter(p => p.id !== productId)
-    }));
+  const handleRemoveProduct = async (productId: string) => {
+    if (!confirm('האם אתה בטוח שברצונך למחוק את המוצר? פעולה זו בלתי הפיכה.')) {
+      return;
+    }
+    
+    try {
+      setLoading(true);
+      // Calculate updated products list
+      const updatedProducts = inputs.products.filter(p => p.id !== productId);
+      
+      // Save updated products to Firestore first
+      await saveProducts(updatedProducts);
+      
+      // Only update state after successful save
+      setInputs(prev => ({
+        ...prev,
+        products: updatedProducts
+      }));
+      setProductsChanged(false);
+      alert('המוצר נמחק בהצלחה!');
+    } catch (error: any) {
+      console.error('Error removing product:', error);
+      alert(`שגיאה במחיקת המוצר: ${error.message || 'שגיאה לא ידועה'}`);
+    } finally {
+      setLoading(false);
+    }
   };
 
 
